@@ -51,6 +51,7 @@ test('bundled plugin loads, clusters, paints, and restores a mocked graph view',
   const leaf = { view: { renderer, containerEl } };
   const listeners = [];
   const workspaceListeners = new Map();
+  let cachedReadCount = 0;
   const status = { text: '', setText(value) { this.text = value; } };
   const app = {
     metadataCache: {
@@ -58,7 +59,10 @@ test('bundled plugin loads, clusters, paints, and restores a mocked graph view',
       on(_event, callback) { listeners.push(callback); return callback; },
     },
     vault: {
-      getMarkdownFiles() { return ids.map((filePath) => ({ path: filePath })); },
+      getMarkdownFiles() {
+        return ids.map((filePath) => ({ path: filePath, stat: { mtime: 1, size: 10 } }));
+      },
+      async cachedRead() { cachedReadCount += 1; return ''; },
       on(_event, callback) { listeners.push(callback); return callback; },
     },
     workspace: {
@@ -134,12 +138,16 @@ test('bundled plugin loads, clusters, paints, and restores a mocked graph view',
   const PluginClass = moduleObject.exports;
   const plugin = new PluginClass(app);
   await plugin.onload();
+  await new Promise((resolve) => setTimeout(resolve, 0));
 
   assert.match(status.text, /2 clusters/);
   assert.ok(changedCount > 0);
   assert.ok(nodes.every((node) => node.color && Number.isInteger(node.color.rgb)));
   assert.notEqual(nodes[0].color.rgb, nodes[3].color.rgb);
   assert.equal(legendChildren.length, 1);
+  assert.equal(cachedReadCount, ids.length);
+  await plugin.recompute();
+  assert.equal(cachedReadCount, ids.length);
 
   const aCommunity = plugin.analysis.assignments.get('A1.md');
   const bCommunity = plugin.analysis.assignments.get('B1.md');

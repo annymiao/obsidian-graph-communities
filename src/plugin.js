@@ -43,6 +43,8 @@ class GraphCommunitiesPlugin extends Plugin {
     this.hoveredCommunity = null;
     this.hoveredNodeId = null;
     this.rendererHooks = new Map();
+    this.documentContentCache = new Map();
+    this.recomputeGeneration = 0;
     this.statusBar = this.addStatusBarItem();
     this.statusBar.setText('Graph Communities: waiting');
     this.addSettingTab(new GraphCommunitiesSettingTab(this.app, this));
@@ -111,34 +113,44 @@ class GraphCommunitiesPlugin extends Plugin {
     else this.schedulePaint();
   }
 
-  buildGraph() {
+  async buildGraph() {
     const files = this.app.vault.getMarkdownFiles();
     const linkGraph = core.graphFromResolvedLinks(
       this.app.metadataCache.resolvedLinks || {},
       files.map((file) => file.path)
     );
-    const documents = files.map((file) => {
-      const cache = this.app.metadataCache.getFileCache
-        ? this.app.metadataCache.getFileCache(file) || {}
-        : {};
-      const frontmatter = cache.frontmatter || {};
-      const tags = [
-        ...(cache.tags || []).map((tag) => tag.tag),
-        ...toStringArray(frontmatter.tags),
-        ...toStringArray(frontmatter.tag),
-      ];
-      return {
-        id: file.path,
-        path: file.path,
-        title: frontmatter.title || displayName(file.path),
-        aliases: [
-          ...toStringArray(frontmatter.aliases),
-          ...toStringArray(frontmatter.alias),
-        ],
-        tags,
-        headings: (cache.headings || []).map((heading) => heading.heading),
-      };
-    });
+    const activePaths = new Set(files.map((file) => file.path));
+    for (const cachedPath of this.documentContentCache.keys()) {
+      if (!activePaths.has(cachedPath)) this.documentContentCache.delete(cachedPath);
+    }
+    const documents = [];
+    const batchSize = 48;
+    for (let index = 0; index < files.length; index += batchSize) {
+      const batch = await Promise.all(files.slice(index, index + batchSize).map(async (file) => {
+        const cache = this.app.metadataCache.getFileCache
+          ? this.app.metadataCache.getFileCache(file) || {}
+          : {};
+        const frontmatter = cache.frontmatter || {};
+        const tags = [
+          ...(cache.tags || []).map((tag) => tag.tag),
+          ...toStringArray(frontmatter.tags),
+          ...toStringArray(frontmatter.tag),
+        ];
+        return {
+          id: file.path,
+          path: file.path,
+          title: frontmatter.title || displayName(file.path),
+          aliases: [
+            ...toStringArray(frontmatter.aliases),
+            ...toStringArray(frontmatter.alias),
+          ],
+          tags,
+          headings: (cache.headings || []).map((heading) => heading.heading),
+          content: await this.readDocumentContent(file),
+        };
+      }));
+      documents.push(...batch);
+    }
     return core.buildHybridGraph(linkGraph, documents, {
       priorityKeywords: this.settings.priorityKeywords,
       linkWeight: this.settings.topicAware ? this.settings.linkWeight : 1,
@@ -151,12 +163,30 @@ class GraphCommunitiesPlugin extends Plugin {
     });
   }
 
+  async readDocumentContent(file) {
+    if (!file || !file.path || typeof this.app.vault.cachedRead !== 'function') return '';
+    const revision = `${file.stat?.mtime ?? 0}:${file.stat?.size ?? 0}`;
+    const cached = this.documentContentCache.get(file.path);
+    if (cached && cached.revision === revision) return cached.content;
+    try {
+      const source = await this.app.vault.cachedRead(file);
+      const content = String(source || '').slice(0, 24000);
+      this.documentContentCache.set(file.path, { revision, content });
+      return content;
+    } catch {
+      return '';
+    }
+  }
+
   async recompute() {
+    const generation = ++this.recomputeGeneration;
     if (!this.settings.enabled) {
       this.restoreAll();
       return;
     }
-    const model = this.buildGraph();
+    this.statusBar.setText('Graph Communities: analyzing note content');
+    const model = await this.buildGraph();
+    if (generation !== this.recomputeGeneration) return;
     this.analysis = core.analyzeGraph(model.graph, {
       resolution: this.settings.resolution,
       maxCommunities: this.settings.maxCommunities,
@@ -575,7 +605,7 @@ class GraphCommunitiesSettingTab extends PluginSettingTab {
     containerEl.empty();
     containerEl.createEl('h2', { text: 'Graph Communities' });
     containerEl.createEl('p', {
-      text: 'Automatically detect link communities. Major hubs receive distinct colors; nearby and boundary notes inherit or blend those colors.',
+      text: 'Infer local content purpose and topics, combine them with graph relationships, and color related knowledge communities without changing notes.',
     });
 
     new Setting(containerEl)
@@ -620,7 +650,7 @@ class GraphCommunitiesSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Topic-aware clustering')
-      .setDesc('Combine links with note titles, folders/projects, tags, aliases, and headings. Generic README/index notes are downweighted.')
+      .setDesc('Infer academic/project context and topics from bounded local note content, then combine them with metadata and links.')
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.topicAware).onChange(async (value) => {
           this.plugin.settings.topicAware = value;
@@ -642,8 +672,8 @@ class GraphCommunitiesSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName('Project/folder influence')
-      .setDesc('How strongly notes from the same detected project directory stay together.')
+      .setName('Content category cohesion')
+      .setDesc('How strongly notes with the same inferred purpose and topic stay together.')
       .addSlider((slider) =>
         slider
           .setLimits(0, 5, 0.1)
@@ -656,8 +686,8 @@ class GraphCommunitiesSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName('Keyword similarity influence')
-      .setDesc('How strongly shared title, path, tag, alias, and heading terms affect grouping.')
+      .setName('Topic similarity influence')
+      .setDesc('How strongly shared inferred tags, metadata, headings, and low-weight path hints affect grouping.')
       .addSlider((slider) =>
         slider
           .setLimits(0, 5, 0.1)

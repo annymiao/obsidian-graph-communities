@@ -34,6 +34,8 @@ const GraphCommunitiesCore = (() => {
     'workflows', 'workflow', 'markdown', 'lectures', 'archive', 'legacy',
     'skill output samples', 'release plans', 'issues archive', 'content',
     '首页', '主页', '目录', '索引', '导航', '总览', '概览', '说明', '欢迎',
+    'desktop', 'desktop资料', 'shared knowledge', 'sharedknowledge',
+    'shared-knowledge', 'resources', 'resource', '资料', '共享知识', '共用知识',
   ]);
 
   const GENERIC_TERMS = new Set([
@@ -41,6 +43,82 @@ const GraphCommunitiesCore = (() => {
     'note', 'notes', 'file', 'files', 'document', 'documents', '项目', '文档',
     '笔记', '内容', '相关', '记录', '工作', '资料', '文件', '知识库',
   ]);
+
+  const CONTENT_TOPIC_RULES = [
+    {
+      key: 'child-companion',
+      label: '儿童陪伴机器人',
+      terms: ['儿童陪伴', '陪伴机器人', '宠物伙伴', 'pemory', '儿童模型', '监护人', '家长端'],
+    },
+    {
+      key: 'language-models',
+      label: '大语言模型',
+      terms: ['language model', 'large language model', 'transformer', 'tokenizer', 'attention', 'rlhf', 'rlvr', 'llm', '语言模型', '大模型', '预训练', '后训练'],
+    },
+    {
+      key: 'speech-asr',
+      label: '语音与 ASR',
+      terms: ['automatic speech recognition', 'speech recognition', 'speech model', 'asr', '语音识别', '语音模型', '音频', '声学模型'],
+    },
+    {
+      key: 'ai-agents',
+      label: 'AI Agent',
+      terms: ['coding agent', 'ai agent', 'agentic', 'multi-agent', '智能体', '多智能体', 'codex agent'],
+    },
+    {
+      key: 'ai-systems',
+      label: 'AI 系统与训练',
+      terms: ['distributed training', 'parallelism', 'inference engine', 'gpu', 'tpu', 'kernel', '训练系统', '分布式训练', '并行训练', '推理系统', '算子优化'],
+    },
+    {
+      key: 'model-evaluation',
+      label: '模型评测',
+      terms: ['benchmark', 'evaluation', 'evals', '评测', '基准测试', '验收集', '失败样本', '模型选型'],
+    },
+    {
+      key: 'data-compliance',
+      label: '数据与合规',
+      terms: ['privacy', 'compliance', 'data governance', 'copyright', '隐私', '合规', '数据治理', '版权', '数据红线'],
+    },
+    {
+      key: 'hardware-design',
+      label: '硬件与工业设计',
+      terms: ['hardware', 'industrial design', 'motor', 'sensor', '硬件', '工业设计', '电机', '传感器', '结构设计'],
+    },
+    {
+      key: 'market-competition',
+      label: '市场与竞品',
+      terms: ['market research', 'competitor', 'competitive', 'pricing', 'business model', '市场研究', '竞品', '定价', '商业模式'],
+    },
+    {
+      key: 'product-strategy',
+      label: '产品策略',
+      terms: ['product strategy', 'product vision', 'product roadmap', 'prd', 'user story', '产品策略', '产品定位', '产品规划', '路线图', '用户故事'],
+    },
+    {
+      key: 'prompt-engineering',
+      label: 'AI Prompts',
+      terms: ['system prompt', 'prompt template', 'prompt engineering', 'you are an ai assistant', '提示词', '系统提示', '提示模板'],
+    },
+  ];
+
+  const PM_ARTIFACT_TERMS = [
+    'product manager', 'product management', '产品经理', '产品管理', 'prd',
+    'product roadmap', 'product strategy', 'product vision', 'market sizing',
+    'opportunity solution tree', 'user story', 'prioritization', 'go-to-market',
+    '产品路线图', '产品策略', '用户故事', '需求优先级', '市场规模',
+  ];
+
+  const PROMPT_FORMAT_TERMS = [
+    'this prompt', 'prompt template', 'system prompt', 'you are an ai assistant',
+    'ask one question at a time', 'instructions:', 'input:', 'output:',
+    '提示词', '系统提示', '提示模板', '角色设定', '输出格式',
+  ];
+
+  const SKILL_FORMAT_TERMS = [
+    'when to use', 'workflow', 'skill', 'framework', 'methodology', 'checklist',
+    'step-by-step', 'output contract', '工作流', '技能', '方法论', '框架', '检查清单',
+  ];
 
   function createGraph(nodeIds = []) {
     const graph = new Map();
@@ -121,10 +199,11 @@ const GraphCommunitiesCore = (() => {
   }
 
   function isGenericLabel(value) {
-    const normalized = normalizedTerm(value).replace(/\s+/g, '');
+    const normalized = normalizedTerm(value);
+    const compact = normalized.replace(/[\s_-]+/g, '');
     if (!normalized) return true;
-    if (GENERIC_DOCUMENT_NAMES.has(normalized)) return true;
-    return /(?:readme|index|homepage|dashboard|overview|contents|目录|索引|导航|首页|总览|概览)/iu.test(normalized);
+    if (GENERIC_DOCUMENT_NAMES.has(normalized) || GENERIC_DOCUMENT_NAMES.has(compact)) return true;
+    return /(?:readme|index|homepage|dashboard|overview|contents|desktop资料|sharedknowledge|目录|索引|导航|首页|总览|概览|共用知识|共享知识)/iu.test(compact);
   }
 
   function isNavigationDocument(id, document = {}) {
@@ -187,6 +266,7 @@ const GraphCommunitiesCore = (() => {
         aliases: asStringArray(raw.aliases),
         tags: asStringArray(raw.tags).map((tag) => tag.replace(/^#/, '')),
         headings: asStringArray(raw.headings).slice(0, 16),
+        content: String(raw.content || raw.body || '').slice(0, 24000),
         navigation: raw.navigation,
       });
     }
@@ -245,6 +325,165 @@ const GraphCommunitiesCore = (() => {
     return projects;
   }
 
+  function countOccurrences(text, term) {
+    if (!term) return 0;
+    let count = 0;
+    let index = 0;
+    while ((index = text.indexOf(term, index)) >= 0 && count < 4) {
+      count += 1;
+      index += term.length;
+    }
+    return count;
+  }
+
+  function scoreTerms(text, terms) {
+    let score = 0;
+    for (const term of terms) {
+      const count = countOccurrences(text, term);
+      if (!count) continue;
+      const distinctive = term.includes(' ') || term.length >= 4 ? 1.35 : 1;
+      score += distinctive * (1 + Math.min(3, count - 1) * 0.35);
+    }
+    return score;
+  }
+
+  function taxonomyTagLabel(key) {
+    const topic = CONTENT_TOPIC_RULES.find((rule) => rule.key === key);
+    if (topic) return topic.label;
+    return {
+      'product-management': 'Product Management',
+      skill: 'Skill',
+      prompt: 'Prompt',
+      academic: '学术',
+      project: '项目',
+      reference: '参考资料',
+    }[key] || humanizeSegment(key);
+  }
+
+  function inferDocumentTaxonomy(document) {
+    const contentText = [
+      document.content,
+      ...document.tags,
+      ...document.headings,
+      ...document.aliases,
+    ].join('\n').normalize('NFKC').toLocaleLowerCase();
+    const fallbackText = [document.title, document.path].join('\n')
+      .normalize('NFKC').toLocaleLowerCase();
+    const searchable = contentText.trim() ? contentText : fallbackText;
+    const topics = CONTENT_TOPIC_RULES
+      .map((rule) => ({ ...rule, score: scoreTerms(searchable, rule.terms) }))
+      .filter((topic) => topic.score >= 1)
+      .sort((a, b) => b.score - a.score || a.key.localeCompare(b.key));
+
+    const explicitPmScore = scoreTerms(searchable, PM_ARTIFACT_TERMS.slice(0, 4));
+    const pmArtifactScore = scoreTerms(searchable, PM_ARTIFACT_TERMS.slice(4));
+    const pmCorpus = /(?:^|\/)[^/]*(?:pm[- _]?skills?|pm[- _]?prompts?|product[- _]?manager)[^/]*(?:\/|$)/iu
+      .test(document.path.normalize('NFKC').toLocaleLowerCase());
+    const promptScore = scoreTerms(searchable, PROMPT_FORMAT_TERMS);
+    const skillScore = scoreTerms(searchable, SKILL_FORMAT_TERMS);
+    let pmRelated = explicitPmScore >= 2.1 || pmCorpus;
+    const promptCorpus = /(?:^|\/)[^/]*(?:product[- _]?manager[- _]?prompts?|pm[- _]?prompts?)[^/]*(?:\/|$)/iu
+      .test(document.path.normalize('NFKC').toLocaleLowerCase());
+    const pmKind = promptCorpus || (promptScore >= 2.2 && promptScore > skillScore * 0.72)
+      ? 'prompt'
+      : 'skill';
+
+    let academicScore = scoreTerms(searchable, [
+      'stanford', 'university', 'lecture', 'assignment', 'course', 'syllabus',
+      'research paper', 'arxiv', 'doi.org', '公开课', '课程', '讲义', '论文', '学术研究',
+      '学习合同', '本节主线', '自测题', '视频结合学习版',
+    ]);
+    if (/(?:stanford|university|公开课|课程|\/lectures?\/)/iu.test(document.path)) {
+      academicScore += 3;
+    }
+    if (!pmCorpus && academicScore >= 2.7) pmRelated = false;
+    let projectScore = scoreTerms(searchable, [
+      'project plan', 'prototype', 'milestone', 'deliverable', 'acceptance criteria',
+      'roadmap', 'supplier', '产品', '项目', '原型', '里程碑', '交付', '验收', '供应商',
+    ]);
+    if (/^(?:10-work|20-competition)(?:\/|$)/iu.test(document.path)) projectScore += 1;
+    if (/type:\s*knowledge-card/iu.test(searchable)) projectScore += 3;
+    if (/scope:[\s\S]{0,120}(?:work|competition)/iu.test(searchable)) projectScore += 2;
+    const context = academicScore >= 2.7 && academicScore > projectScore + 0.7
+      ? 'academic'
+      : projectScore >= 2.4 ? 'project' : 'reference';
+
+    return {
+      context,
+      topics,
+      pmRelated,
+      pmKind,
+      promptScore,
+      skillScore,
+      pmArtifactScore,
+    };
+  }
+
+  function deriveTopicAssignments(documents, directoryProjects) {
+    const assignments = new Map();
+    const counts = new Map();
+    for (const document of documents.values()) {
+      const taxonomy = inferDocumentTaxonomy(document);
+      const directoryProject = directoryProjects.get(document.id);
+      const primary = taxonomy.context === 'project'
+        ? taxonomy.topics.find((topic) => topic.key === 'child-companion') || taxonomy.topics[0]
+        : taxonomy.topics[0];
+      let key;
+      let label;
+      let weightScale = 1;
+      let communityWeight = 1;
+
+      if (taxonomy.pmRelated) {
+        const prompts = taxonomy.pmKind === 'prompt';
+        key = prompts ? '@topic:pm-prompts' : '@topic:pm-skills';
+        label = prompts ? 'PM Prompts' : 'PM Skills';
+        weightScale = 0.18;
+        communityWeight = 0.12;
+      } else if (taxonomy.context === 'academic' && primary) {
+        key = `@topic:academic:${primary.key}`;
+        label = `学术 · ${primary.label}`;
+      } else if (taxonomy.context === 'academic') {
+        key = '@topic:academic:general';
+        label = '学术 · 研究资料';
+      } else if (taxonomy.context === 'project' && primary) {
+        const secondary = primary.key === 'child-companion'
+          ? taxonomy.topics.find((topic) => topic.key !== 'child-companion' && topic.score >= 1.7)
+          : null;
+        key = secondary
+          ? `@topic:project:${primary.key}:${secondary.key}`
+          : `@topic:project:${primary.key}`;
+        label = secondary
+          ? `项目 · 儿童陪伴 / ${secondary.label}`
+          : `项目 · ${primary.label}`;
+      } else if (primary) {
+        key = `@topic:${primary.key}`;
+        label = primary.label;
+      } else if (directoryProject && !isGenericLabel(directoryProject.label)) {
+        key = directoryProject.key;
+        label = directoryProject.label;
+      } else {
+        key = `@root:${document.id}`;
+        label = humanizeSegment(document.title) || 'Unclassified';
+      }
+
+      counts.set(key, (counts.get(key) || 0) + 1);
+      assignments.set(document.id, {
+        key,
+        label,
+        size: 1,
+        weightScale,
+        communityWeight,
+        context: taxonomy.context,
+        contextTags: taxonomy.pmRelated ? ['product-management'] : [taxonomy.context],
+        topicTags: taxonomy.pmRelated
+          ? ['product-management', taxonomy.pmKind]
+          : taxonomy.topics.slice(0, 4).map((topic) => topic.key),
+      });
+    }
+    for (const assignment of assignments.values()) assignment.size = counts.get(assignment.key) || 1;
+    return assignments;
+  }
+
   function buildDocumentFeatures(documents, projects, options = {}) {
     const priorityKeywords = parsePriorityKeywords(options.priorityKeywords);
     const features = new Map();
@@ -252,37 +491,46 @@ const GraphCommunitiesCore = (() => {
       const vector = new Map();
       const labelTerms = new Map();
       const project = projects.get(document.id);
-      addTextFeatures(vector, document.title, 3.6);
-      addTextFeatures(labelTerms, document.title, 3.6);
+      addTextFeatures(vector, document.title, 1.5);
+      addTextFeatures(labelTerms, document.title, 1.5);
       for (const alias of document.aliases) {
-        addTextFeatures(vector, alias, 3.1);
-        addTextFeatures(labelTerms, alias, 3.1);
+        addTextFeatures(vector, alias, 1.8);
+        addTextFeatures(labelTerms, alias, 1.8);
       }
       for (const tag of document.tags) {
-        addTextFeatures(vector, tag, 4.8);
-        addTextFeatures(labelTerms, tag, 4.8);
+        addTextFeatures(vector, tag, 4.2);
+        addTextFeatures(labelTerms, tag, 4.2);
       }
       const pathSegments = document.path.split('/').slice(0, -1).map(humanizeSegment);
       pathSegments.forEach((segment, index) => {
-        const weight = index === pathSegments.length - 1 ? 2.8 : 1.9;
+        const weight = index === pathSegments.length - 1 ? 0.55 : 0.2;
         addTextFeatures(vector, segment, weight);
-        addTextFeatures(labelTerms, segment, weight * 0.75);
+        if (!isGenericLabel(segment)) addTextFeatures(labelTerms, segment, weight * 0.5);
       });
-      for (const heading of document.headings) addTextFeatures(vector, heading, 1.15);
+      for (const heading of document.headings) addTextFeatures(vector, heading, 1.6);
+
+      for (const context of project?.contextTags || []) {
+        vector.set(`@context:${context}`, 4.5);
+        labelTerms.set(taxonomyTagLabel(context), 5.5);
+      }
+      for (const topic of project?.topicTags || []) {
+        vector.set(`@topic:${topic}`, topic === 'product-management' ? 2.2 : 5.2);
+        labelTerms.set(taxonomyTagLabel(topic), topic === 'product-management' ? 5 : 7);
+      }
+      if (project && !isGenericLabel(project.label)) labelTerms.set(project.label, 12);
 
       const searchable = [
-        document.path,
         document.title,
         ...document.aliases,
         ...document.tags,
         ...document.headings,
+        document.content,
       ].join(' ').normalize('NFKC').toLocaleLowerCase();
       const priorityMatches = priorityKeywords.filter((keyword) => searchable.includes(keyword));
       for (const keyword of priorityMatches) {
         vector.set(`@priority:${keyword}`, 4);
         labelTerms.set(keyword, 8);
       }
-      if (project && !isGenericLabel(project.label)) labelTerms.set(project.label, 5);
       features.set(document.id, { vector, labelTerms, priorityMatches });
     }
     return { features, priorityKeywords };
@@ -290,7 +538,8 @@ const GraphCommunitiesCore = (() => {
 
   function buildHybridGraph(linkGraph, documentInput = [], options = {}) {
     const documents = normalizeDocumentInput(documentInput, linkGraph);
-    const projects = deriveProjectAssignments(documents, options);
+    const directoryProjects = deriveProjectAssignments(documents, options);
+    const projects = deriveTopicAssignments(documents, directoryProjects, options);
     const { features, priorityKeywords } = buildDocumentFeatures(documents, projects, options);
     const linkWeight = clamp(numericOption(options, 'linkWeight', 0.65), 0, 10);
     const navigationPenalty = clamp(numericOption(options, 'navigationLinkPenalty', 0.08), 0, 1);
@@ -309,9 +558,12 @@ const GraphCommunitiesCore = (() => {
       document.projectLabel = project && project.label;
       document.labelTerms = feature && feature.labelTerms;
       document.priorityMatches = feature && feature.priorityMatches;
+      document.contextTags = project && project.contextTags;
+      document.topicTags = project && project.topicTags;
+      document.communityWeight = project?.communityWeight == null ? 1 : project.communityWeight;
       document.navigation = isNavigationDocument(id, document);
     }
-    return { graph, documents, projects, features, priorityKeywords };
+    return { graph, documents, projects, directoryProjects, features, priorityKeywords };
   }
 
   function addProjectEdges(graph, projects, options = {}) {
@@ -320,10 +572,14 @@ const GraphCommunitiesCore = (() => {
     if (weight <= 0 || neighbors <= 0) return;
     const groups = new Map();
     for (const [id, project] of projects.entries()) {
-      if (!groups.has(project.key)) groups.set(project.key, []);
-      groups.get(project.key).push(id);
+      if (!groups.has(project.key)) {
+        groups.set(project.key, { members: [], weightScale: project.weightScale ?? 1 });
+      }
+      groups.get(project.key).members.push(id);
     }
-    for (const members of groups.values()) {
+    for (const group of groups.values()) {
+      const members = group.members;
+      const groupWeight = weight * group.weightScale;
       members.sort((a, b) => a.localeCompare(b));
       if (members.length < 2) continue;
       const seen = new Set();
@@ -336,7 +592,7 @@ const GraphCommunitiesCore = (() => {
           const key = source < target ? `${source}\u0000${target}` : `${target}\u0000${source}`;
           if (seen.has(key)) continue;
           seen.add(key);
-          addUndirectedEdge(graph, source, target, weight / Math.sqrt(offset));
+          addUndirectedEdge(graph, source, target, groupWeight / Math.sqrt(offset));
         }
       }
     }
@@ -680,12 +936,33 @@ const GraphCommunitiesCore = (() => {
       .filter((group) => group.nodes.length >= minCommunitySize)
       .map((group) => ({
         ...group,
+        effectiveSize: group.nodes.reduce(
+          (sum, node) => sum + (documents.get(node)?.communityWeight ?? 1),
+          0
+        ),
         score: group.nodes.reduce((sum, node) => sum + weightedDegree(graph, node), 0),
       }))
-      .sort((a, b) => b.nodes.length - a.nodes.length || b.score - a.score || a.key.localeCompare(b.key));
+      .sort((a, b) => b.effectiveSize - a.effectiveSize || b.score - a.score ||
+        b.nodes.length - a.nodes.length || a.key.localeCompare(b.key));
     if (!ranked.length) return new Map([...graph.keys()].map((node) => [node, -1]));
 
-    const kept = ranked.slice(0, maxCommunities);
+    const kept = ranked.filter((group) => /^@topic:pm-(?:skills|prompts)$/u.test(group.key));
+    const keepDiverseGroups = (pattern, limit) => {
+      let added = 0;
+      for (const group of ranked) {
+        if (kept.length >= maxCommunities || added >= limit) break;
+        if (pattern.test(group.key) && !kept.includes(group)) {
+          kept.push(group);
+          added += 1;
+        }
+      }
+    };
+    keepDiverseGroups(/^@topic:project:/u, 4);
+    keepDiverseGroups(/^@topic:academic:/u, 2);
+    for (const group of ranked) {
+      if (kept.length >= maxCommunities) break;
+      if (!kept.includes(group)) kept.push(group);
+    }
     const communityByProject = new Map(kept.map((group, index) => [group.key, index]));
     const assignments = new Map([...graph.keys()].map((node) => [node, -1]));
     for (const group of kept) {
@@ -693,7 +970,8 @@ const GraphCommunitiesCore = (() => {
       for (const node of group.nodes) assignments.set(node, community);
     }
 
-    for (const group of ranked.slice(maxCommunities)) {
+    for (const group of ranked) {
+      if (kept.includes(group)) continue;
       const weights = new Map();
       for (const node of group.nodes) {
         for (const [neighbor, weight] of (graph.get(node) || new Map()).entries()) {
@@ -809,16 +1087,11 @@ const GraphCommunitiesCore = (() => {
       label = 'Community';
     }
     const keywords = [...new Set([
-      ...priorityRanked.map(([term]) => term),
       ...projectRanked.map(([term]) => term),
       ...termRanked.map(([term]) => term),
+      ...priorityRanked.map(([term]) => term),
     ])]
       .filter((term) => term !== label && !isGenericLabel(term))
-      .sort((a, b) => {
-        const aPriority = priorityOrder.has(a) ? priorityOrder.get(a) : Number.MAX_SAFE_INTEGER;
-        const bPriority = priorityOrder.has(b) ? priorityOrder.get(b) : Number.MAX_SAFE_INTEGER;
-        return aPriority - bPriority;
-      })
       .slice(0, 4);
     return { label: humanizeSegment(label) || 'Community', keywords };
   }
@@ -973,6 +1246,7 @@ const GraphCommunitiesCore = (() => {
     const peripheralFade = clamp(numericOption(options, 'peripheralFade', 0.18), 0, 0.85);
     const maxDegree = Math.max(1, ...[...graph.keys()].map((node) => weightedDegree(graph, node)));
     const hubSet = new Set(hubs.values());
+    const documents = options.documents instanceof Map ? options.documents : new Map();
     const colors = new Map();
     for (const node of graph.keys()) {
       const vector = affinities.get(node) || [];
@@ -987,7 +1261,13 @@ const GraphCommunitiesCore = (() => {
       }
       const degreeRatio = Math.log1p(weightedDegree(graph, node)) / Math.log1p(maxDegree);
       const confidence = Math.max(...vector);
-      const fade = peripheralFade * (1 - degreeRatio) * (0.65 + 0.35 * (1 - confidence));
+      const communityWeight = clamp(documents.get(node)?.communityWeight ?? 1, 0, 1);
+      const corpusFade = (1 - communityWeight) * 0.28;
+      const fade = clamp(
+        peripheralFade * (1 - degreeRatio) * (0.65 + 0.35 * (1 - confidence)) + corpusFade,
+        0,
+        0.72
+      );
       colors.set(node, mixRgb(mixed, neutral, fade));
     }
     return { colors, palette };
@@ -1149,6 +1429,8 @@ class GraphCommunitiesPlugin extends Plugin {
     this.hoveredCommunity = null;
     this.hoveredNodeId = null;
     this.rendererHooks = new Map();
+    this.documentContentCache = new Map();
+    this.recomputeGeneration = 0;
     this.statusBar = this.addStatusBarItem();
     this.statusBar.setText('Graph Communities: waiting');
     this.addSettingTab(new GraphCommunitiesSettingTab(this.app, this));
@@ -1217,34 +1499,44 @@ class GraphCommunitiesPlugin extends Plugin {
     else this.schedulePaint();
   }
 
-  buildGraph() {
+  async buildGraph() {
     const files = this.app.vault.getMarkdownFiles();
     const linkGraph = core.graphFromResolvedLinks(
       this.app.metadataCache.resolvedLinks || {},
       files.map((file) => file.path)
     );
-    const documents = files.map((file) => {
-      const cache = this.app.metadataCache.getFileCache
-        ? this.app.metadataCache.getFileCache(file) || {}
-        : {};
-      const frontmatter = cache.frontmatter || {};
-      const tags = [
-        ...(cache.tags || []).map((tag) => tag.tag),
-        ...toStringArray(frontmatter.tags),
-        ...toStringArray(frontmatter.tag),
-      ];
-      return {
-        id: file.path,
-        path: file.path,
-        title: frontmatter.title || displayName(file.path),
-        aliases: [
-          ...toStringArray(frontmatter.aliases),
-          ...toStringArray(frontmatter.alias),
-        ],
-        tags,
-        headings: (cache.headings || []).map((heading) => heading.heading),
-      };
-    });
+    const activePaths = new Set(files.map((file) => file.path));
+    for (const cachedPath of this.documentContentCache.keys()) {
+      if (!activePaths.has(cachedPath)) this.documentContentCache.delete(cachedPath);
+    }
+    const documents = [];
+    const batchSize = 48;
+    for (let index = 0; index < files.length; index += batchSize) {
+      const batch = await Promise.all(files.slice(index, index + batchSize).map(async (file) => {
+        const cache = this.app.metadataCache.getFileCache
+          ? this.app.metadataCache.getFileCache(file) || {}
+          : {};
+        const frontmatter = cache.frontmatter || {};
+        const tags = [
+          ...(cache.tags || []).map((tag) => tag.tag),
+          ...toStringArray(frontmatter.tags),
+          ...toStringArray(frontmatter.tag),
+        ];
+        return {
+          id: file.path,
+          path: file.path,
+          title: frontmatter.title || displayName(file.path),
+          aliases: [
+            ...toStringArray(frontmatter.aliases),
+            ...toStringArray(frontmatter.alias),
+          ],
+          tags,
+          headings: (cache.headings || []).map((heading) => heading.heading),
+          content: await this.readDocumentContent(file),
+        };
+      }));
+      documents.push(...batch);
+    }
     return core.buildHybridGraph(linkGraph, documents, {
       priorityKeywords: this.settings.priorityKeywords,
       linkWeight: this.settings.topicAware ? this.settings.linkWeight : 1,
@@ -1257,12 +1549,30 @@ class GraphCommunitiesPlugin extends Plugin {
     });
   }
 
+  async readDocumentContent(file) {
+    if (!file || !file.path || typeof this.app.vault.cachedRead !== 'function') return '';
+    const revision = `${file.stat?.mtime ?? 0}:${file.stat?.size ?? 0}`;
+    const cached = this.documentContentCache.get(file.path);
+    if (cached && cached.revision === revision) return cached.content;
+    try {
+      const source = await this.app.vault.cachedRead(file);
+      const content = String(source || '').slice(0, 24000);
+      this.documentContentCache.set(file.path, { revision, content });
+      return content;
+    } catch {
+      return '';
+    }
+  }
+
   async recompute() {
+    const generation = ++this.recomputeGeneration;
     if (!this.settings.enabled) {
       this.restoreAll();
       return;
     }
-    const model = this.buildGraph();
+    this.statusBar.setText('Graph Communities: analyzing note content');
+    const model = await this.buildGraph();
+    if (generation !== this.recomputeGeneration) return;
     this.analysis = core.analyzeGraph(model.graph, {
       resolution: this.settings.resolution,
       maxCommunities: this.settings.maxCommunities,
@@ -1681,7 +1991,7 @@ class GraphCommunitiesSettingTab extends PluginSettingTab {
     containerEl.empty();
     containerEl.createEl('h2', { text: 'Graph Communities' });
     containerEl.createEl('p', {
-      text: 'Automatically detect link communities. Major hubs receive distinct colors; nearby and boundary notes inherit or blend those colors.',
+      text: 'Infer local content purpose and topics, combine them with graph relationships, and color related knowledge communities without changing notes.',
     });
 
     new Setting(containerEl)
@@ -1726,7 +2036,7 @@ class GraphCommunitiesSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Topic-aware clustering')
-      .setDesc('Combine links with note titles, folders/projects, tags, aliases, and headings. Generic README/index notes are downweighted.')
+      .setDesc('Infer academic/project context and topics from bounded local note content, then combine them with metadata and links.')
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.topicAware).onChange(async (value) => {
           this.plugin.settings.topicAware = value;
@@ -1748,8 +2058,8 @@ class GraphCommunitiesSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName('Project/folder influence')
-      .setDesc('How strongly notes from the same detected project directory stay together.')
+      .setName('Content category cohesion')
+      .setDesc('How strongly notes with the same inferred purpose and topic stay together.')
       .addSlider((slider) =>
         slider
           .setLimits(0, 5, 0.1)
@@ -1762,8 +2072,8 @@ class GraphCommunitiesSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName('Keyword similarity influence')
-      .setDesc('How strongly shared title, path, tag, alias, and heading terms affect grouping.')
+      .setName('Topic similarity influence')
+      .setDesc('How strongly shared inferred tags, metadata, headings, and low-weight path hints affect grouping.')
       .addSlider((slider) =>
         slider
           .setLimits(0, 5, 0.1)

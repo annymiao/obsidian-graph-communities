@@ -2,15 +2,18 @@
 
 [简体中文](README.zh-CN.md)
 
-Graph Communities turns Obsidian's gray graph into a topic-aware knowledge map.
-It groups notes primarily by project/folder and strengthens those groups with
-local keyword and metadata similarity. Each major topic gets a distinct color;
+Graph Communities turns Obsidian's gray graph into a content-aware knowledge map.
+It groups notes primarily by locally inferred purpose and topic, then strengthens
+those groups with metadata, links, and low-weight folder hints. Each major topic gets a distinct color;
 related topics and bridge notes receive visually related blended colors.
 
 ## What it does
 
-- Detects projects automatically from the vault's folder structure.
-- Uses titles, paths, tags, aliases, headings, and links as local grouping signals.
+- Reads a bounded local excerpt of each note to infer academic, project, reference, and prompt/skill context.
+- Infers themes such as language models, AI systems, agents, speech, compliance, hardware, market research, and product strategy.
+- Treats generic storage folders such as Desktop, Shared Knowledge, and Resources as locations—not categories.
+- Consolidates Product Manager material into PM Skills and PM Prompts, with reduced clustering and visual weight.
+- Uses content, tags, aliases, headings, links, and low-weight path hints as grouping signals.
 - Supports priority keywords such as `AI`, `LLM`, `ASR`, or your own project names.
 - Downweights generic navigation notes such as README, index, overview, and resources.
 - Selects an informative note—not a navigation file—as the community representative.
@@ -70,10 +73,10 @@ Restart or reload Obsidian after installing a new build.
 | --- | ---: | --- |
 | Maximum communities | 12 | Limits the number of major topic/project colors |
 | Minimum community size | 3 | Keeps tiny fragments neutral or merges them |
-| Topic-aware clustering | On | Combines projects, keywords, metadata, and links |
+| Topic-aware clustering | On | Combines local body context, topics, metadata, and links |
 | Priority topic keywords | AI, LLM, ASR, RAG, Agent | Terms that influence grouping and labels |
-| Project/folder influence | 5.0 | Keeps notes in the same detected project together |
-| Keyword similarity influence | 1.4 | Connects notes with similar local metadata |
+| Content category cohesion | 5.0 | Keeps notes with the same inferred purpose/topic together |
+| Topic similarity influence | 1.4 | Connects notes sharing inferred tags and local metadata |
 | Clustering resolution | 1.0 | Lower = fewer broad groups; higher = more groups |
 | Relationship blending | 0.52 | Higher = stronger color mixing across links |
 | Blending distance | 4 | Number of link hops used for color propagation |
@@ -85,20 +88,18 @@ metadata cache resolves or Markdown files change.
 
 ## How the algorithm works
 
-1. Detect project boundaries from meaningful folder names. Structural folders
-   such as `docs`, `src`, `references`, and `archive` are skipped when possible.
-2. Build local keyword vectors from filenames, paths, tags, aliases, and headings.
-3. Combine project edges and keyword similarity with downweighted internal links.
-4. Assign one base community per major project; the deterministic Louvain model
-   remains available when project-first grouping is disabled in code.
-5. Pick an informative representative while heavily penalizing README/index notes.
-6. Diffuse community-affinity vectors through neighboring notes for a configured
+1. Read at most the first 24,000 characters of each Markdown note through Obsidian's local vault API and cache the result by file revision.
+2. Infer usage context (academic, project, or reference) and multiple topic tags from body content and metadata.
+3. Consolidate Product Manager content into PM Skills or PM Prompts from its corpus identity and body format, then reduce that large corpus's graph weight.
+4. Treat generic storage folders as weak hints; meaningful project folders remain a fallback only when content signals are insufficient.
+5. Combine inferred context/topic edges, semantic similarity, and downweighted navigation links while preserving project and academic diversity.
+6. Pick an informative representative while heavily penalizing README/index notes.
+7. Diffuse community-affinity vectors through neighboring notes for a configured
    number of graph hops.
-7. Mix the community palette in linear RGB space from each node's affinity
+8. Mix the community palette in linear RGB space from each node's affinity
    vector. This produces smooth, relationship-aware transition colors.
 
-The model is local and metadata-based. It does not read body paragraphs, call a
-cloud embedding service, or send vault data over the network.
+The model is fully local and rule-based. It reads bounded note excerpts but does not call a cloud embedding service or send vault data over the network.
 
 ## Privacy and safety
 

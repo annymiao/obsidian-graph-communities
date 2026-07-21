@@ -85,6 +85,7 @@ console.log(JSON.stringify({
     label: cluster.label,
     size: cluster.size,
     representative: cluster.hub,
+    representativeGroup: model.documents.get(cluster.hub)?.projectLabel,
     keywords: cluster.keywords,
     navigationRepresentative: core.isNavigationDocument(
       cluster.hub,
@@ -126,6 +127,7 @@ function extractDocument(source, text) {
     tags: [...splitMetadataList(frontmatterTags && frontmatterTags[1]), ...inlineTags],
     aliases: splitMetadataList(frontmatterAliases && frontmatterAliases[1]),
     headings,
+    content: text.slice(0, 24000),
   };
 }
 

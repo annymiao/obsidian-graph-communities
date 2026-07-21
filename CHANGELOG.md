@@ -2,8 +2,12 @@
 
 ## 0.2.0 — 2026-07-21
 
-- Make project/folder identity the primary community boundary.
-- Add local keyword similarity from titles, paths, tags, aliases, and headings.
+- Make locally inferred content purpose and topic the primary community boundary.
+- Read and cache bounded local body excerpts without network access.
+- Consolidate Product Manager material into reduced-weight PM Skills and PM Prompts communities.
+- Treat Desktop, Shared Knowledge, Resources, and other storage folders as locations rather than categories.
+- Add academic/project context plus multi-topic labels from body content and metadata.
+- Keep folder identity as a low-weight fallback when content signals are insufficient.
 - Add configurable priority keywords such as AI, LLM, ASR, RAG, or project names.
 - Downweight README, index, navigation, resource, and other structural notes.
 - Use human-readable topic/project labels in the legend instead of hub filenames.

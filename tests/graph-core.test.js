@@ -221,3 +221,81 @@ test('uses priority keywords such as AI across directory boundaries', () => {
   );
   assert.ok(analysis.clusters.some((cluster) => cluster.label === 'AI'));
 });
+
+test('classifies PM content as skills or prompts from body semantics', () => {
+  const documents = [
+    {
+      id: 'Inbox/a.md', path: 'Inbox/a.md',
+      content: 'For product managers and product management teams. When to use this skill: follow the workflow, framework, and checklist to create a PRD.',
+    },
+    {
+      id: 'Archive/b.md', path: 'Archive/b.md',
+      content: 'Product manager operating method for product management. This skill provides a step-by-step workflow and output contract for roadmap prioritization.',
+    },
+    {
+      id: 'Inbox/c.md', path: 'Inbox/c.md',
+      content: 'This prompt is for a product manager working in product management. You are an AI assistant. Instructions: ask one question at a time. Input: context. Output: a product strategy.',
+    },
+    {
+      id: 'Archive/d.md', path: 'Archive/d.md',
+      content: 'Product manager and product management prompt template. You are an AI assistant. Instructions: collect the input and produce the output in the requested format.',
+    },
+  ];
+  const model = core.buildHybridGraph(
+    core.createGraph(documents.map((document) => document.id)),
+    documents,
+    { projectWeight: 3, semanticWeight: 2 }
+  );
+  const analysis = core.analyzeGraph(model.graph, {
+    documents: model.documents,
+    maxCommunities: 4,
+    minCommunitySize: 2,
+  });
+
+  assert.equal(model.documents.get('Inbox/a.md').projectLabel, 'PM Skills');
+  assert.equal(model.documents.get('Inbox/c.md').projectLabel, 'PM Prompts');
+  assert.equal(model.documents.get('Inbox/a.md').communityWeight, 0.12);
+  assert.deepEqual(
+    new Set(analysis.clusters.map((cluster) => cluster.label)),
+    new Set(['PM Skills', 'PM Prompts'])
+  );
+});
+
+test('uses content context and topics instead of generic storage folders', () => {
+  const documents = [
+    {
+      id: 'Desktop/a.md', path: 'Desktop/a.md',
+      content: 'Stanford university public course lecture and assignment about transformer language models, tokenization, attention, and LLM training.',
+    },
+    {
+      id: 'Shared Knowledge/b.md', path: 'Shared Knowledge/b.md',
+      content: 'University course lecture notes and research paper discussion about transformer language models, tokenizer design, and attention.',
+    },
+    {
+      id: 'Desktop/c.md', path: 'Desktop/c.md',
+      content: 'type: knowledge-card\nscope: work\n儿童陪伴机器人项目的数据治理、隐私、合规与监护人授权方案。产品原型需要明确验收标准。',
+    },
+    {
+      id: 'Shared Knowledge/d.md', path: 'Shared Knowledge/d.md',
+      content: 'type: knowledge-card\nscope: competition\n陪伴机器人的儿童数据合规、隐私保护和版权红线，属于产品项目交付范围。',
+    },
+  ];
+  const model = core.buildHybridGraph(
+    core.createGraph(documents.map((document) => document.id)),
+    documents,
+    { projectWeight: 3, semanticWeight: 2 }
+  );
+  const analysis = core.analyzeGraph(model.graph, {
+    documents: model.documents,
+    maxCommunities: 4,
+    minCommunitySize: 2,
+  });
+  const labels = new Set(analysis.clusters.map((cluster) => cluster.label));
+
+  assert.ok(labels.has('学术 · 大语言模型'));
+  assert.ok(labels.has('项目 · 儿童陪伴 / 数据与合规'));
+  assert.ok(!labels.has('Desktop'));
+  assert.ok(!labels.has('Shared Knowledge'));
+  assert.deepEqual(model.documents.get('Desktop/a.md').contextTags, ['academic']);
+  assert.ok(model.documents.get('Shared Knowledge/d.md').topicTags.includes('data-compliance'));
+});
