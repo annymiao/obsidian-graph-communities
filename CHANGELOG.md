@@ -9,7 +9,7 @@
 - Use human-readable topic/project labels in the legend instead of hub filenames.
 - Prefer informative representative notes over high-degree navigation files.
 - Preserve relationship-aware color blending across related projects and topics.
-- Synchronize node selection with the legend and add clickable category focus for nodes and internal links.
+- Synchronize native graph node hover/click states with the legend and add clickable category focus for nodes and internal links.
 
 ## 0.1.0 — 2026-07-21
 

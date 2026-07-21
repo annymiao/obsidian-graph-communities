@@ -22,6 +22,9 @@ test('bundled plugin loads, clusters, paints, and restores a mocked graph view',
     { source: nodes[3], target: nodes[4], line: {} },
   ];
   let changedCount = 0;
+  let originalNodeClickCount = 0;
+  let originalNodeHoverCount = 0;
+  let originalNodeUnhoverCount = 0;
   const renderer = {
     nodes,
     links: graphLinks,
@@ -30,6 +33,9 @@ test('bundled plugin loads, clusters, paints, and restores a mocked graph view',
       line: { a: 0.8, rgb: 0x777777 },
     },
     changed() { changedCount += 1; },
+    onNodeClick() { originalNodeClickCount += 1; },
+    onNodeHover() { originalNodeHoverCount += 1; },
+    onNodeUnhover() { originalNodeUnhoverCount += 1; },
   };
   const legendChildren = [];
   let legendElement = null;
@@ -138,7 +144,27 @@ test('bundled plugin loads, clusters, paints, and restores a mocked graph view',
   const aCommunity = plugin.analysis.assignments.get('A1.md');
   const bCommunity = plugin.analysis.assignments.get('B1.md');
   assert.notEqual(aCommunity, bCommunity);
-  workspaceListeners.get('file-open')[0]({ path: 'A1.md' });
+  const originalNodeClick = renderer.onNodeClick;
+  const originalNodeHover = renderer.onNodeHover;
+  const originalNodeUnhover = renderer.onNodeUnhover;
+  plugin.paintAll();
+  assert.equal(renderer.onNodeClick, originalNodeClick);
+  renderer.onNodeHover({}, 'A1.md', '');
+  assert.equal(originalNodeHoverCount, 1);
+  assert.equal(plugin.hoveredCommunity, aCommunity);
+  assert.equal(plugin.focusedCommunity, null);
+  assert.ok(nodes.every((node) => node.color.a === 1));
+  let rows = legendElement.children.filter((child) =>
+    child.className.startsWith('graph-communities-legend-row')
+  );
+  assert.equal(rows.filter((row) => row.className.includes('is-active')).length, 1);
+  assert.equal(rows.find((row) => row.className.includes('is-active')).children[2].textContent, 'NODE');
+  renderer.onNodeUnhover();
+  assert.equal(originalNodeUnhoverCount, 1);
+  assert.equal(plugin.hoveredCommunity, null);
+
+  renderer.onNodeClick({}, 'A1.md', '');
+  assert.equal(originalNodeClickCount, 1);
   assert.equal(plugin.focusedCommunity, aCommunity);
   assert.equal(plugin.focusedNodeId, 'A1.md');
   assert.equal(nodes.find((node) => node.id === 'A1.md').color.a, 1);
@@ -146,7 +172,7 @@ test('bundled plugin loads, clusters, paints, and restores a mocked graph view',
   assert.equal(graphLinks[0].line.alpha, 0.68);
   assert.equal(graphLinks[2].line.alpha, 0.025);
   assert.equal(graphLinks[1].line.alpha, 0.18);
-  let rows = legendElement.children.filter((child) =>
+  rows = legendElement.children.filter((child) =>
     child.className.startsWith('graph-communities-legend-row')
   );
   assert.equal(rows.filter((row) => row.className.includes('is-active')).length, 1);
@@ -173,6 +199,15 @@ test('bundled plugin loads, clusters, paints, and restores a mocked graph view',
   assert.equal(graphLinks[1].line.alpha, 0.16);
 
   plugin.onunload();
+  assert.notEqual(renderer.onNodeClick, originalNodeClick);
+  assert.notEqual(renderer.onNodeHover, originalNodeHover);
+  assert.notEqual(renderer.onNodeUnhover, originalNodeUnhover);
+  renderer.onNodeClick({}, 'B1.md', '');
+  renderer.onNodeHover({}, 'B1.md', '');
+  renderer.onNodeUnhover();
+  assert.equal(originalNodeClickCount, 2);
+  assert.equal(originalNodeHoverCount, 2);
+  assert.equal(originalNodeUnhoverCount, 2);
   assert.ok(nodes.every((node) => node.color.rgb === 0x999999));
   assert.ok(graphLinks.every((link) => link.line.tint === 0x777777));
   assert.ok(graphLinks.every((link) => link.line.alpha === 0.8));

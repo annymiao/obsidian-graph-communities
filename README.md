@@ -38,7 +38,7 @@ Node size remains controlled by Obsidian. Graph Communities changes color only:
 
 ## Interactive focus
 
-- Click a graph node to open it. Its category becomes selected in the legend and the node is emphasized.
+- Hover a graph node to preview its category immediately in the legend; click the node to open it and keep that category selected.
 - Click a legend category to focus every node in that category and its internal links; unrelated nodes and links are dimmed.
 - Click the active category again, or run **Graph Communities: Clear graph community focus**, to restore the complete graph.
 - The currently selected note is shown above the legend categories.
