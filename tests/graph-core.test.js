@@ -127,3 +127,97 @@ test('honors zero blending distance instead of replacing it with the default', (
   assert.deepEqual(affinities.get('left'), [1, 0]);
   assert.deepEqual(affinities.get('right'), [0, 1]);
 });
+
+test('groups unlinked notes by detected project folders', () => {
+  const ids = [
+    'Project Alpha/roadmap.md',
+    'Project Alpha/research.md',
+    'Project Alpha/launch.md',
+    'Project Beta/roadmap.md',
+    'Project Beta/research.md',
+    'Project Beta/launch.md',
+  ];
+  const linkGraph = core.createGraph(ids);
+  const model = core.buildHybridGraph(
+    linkGraph,
+    ids.map((id) => ({ id, path: id })),
+    { projectWeight: 3, semanticWeight: 0, projectMaxSize: 20 }
+  );
+  const analysis = core.analyzeGraph(model.graph, {
+    documents: model.documents,
+    maxCommunities: 4,
+    minCommunitySize: 2,
+  });
+
+  assert.equal(
+    analysis.assignments.get('Project Alpha/roadmap.md'),
+    analysis.assignments.get('Project Alpha/launch.md')
+  );
+  assert.notEqual(
+    analysis.assignments.get('Project Alpha/roadmap.md'),
+    analysis.assignments.get('Project Beta/roadmap.md')
+  );
+  assert.deepEqual(
+    new Set(analysis.clusters.map((cluster) => cluster.label)),
+    new Set(['Project Alpha', 'Project Beta'])
+  );
+});
+
+test('does not use README or index notes as representative hubs', () => {
+  const ids = [
+    'Project Phoenix/README.md',
+    'Project Phoenix/AI architecture.md',
+    'Project Phoenix/Model evaluation.md',
+    'Project Phoenix/Product strategy.md',
+  ];
+  const linkGraph = core.buildWeightedGraph([
+    [ids[0], ids[1], 8],
+    [ids[0], ids[2], 8],
+    [ids[0], ids[3], 8],
+  ], ids);
+  const model = core.buildHybridGraph(
+    linkGraph,
+    ids.map((id) => ({ id, path: id })),
+    { projectWeight: 3, semanticWeight: 1, navigationLinkPenalty: 0.08 }
+  );
+  const analysis = core.analyzeGraph(model.graph, {
+    documents: model.documents,
+    maxCommunities: 2,
+    minCommunitySize: 2,
+  });
+
+  assert.notEqual(analysis.clusters[0].hub, ids[0]);
+  assert.equal(analysis.clusters[0].label, 'Project Phoenix');
+});
+
+test('uses priority keywords such as AI across directory boundaries', () => {
+  const documents = [
+    { id: 'Work/voice/AI speech model.md', path: 'Work/voice/AI speech model.md' },
+    { id: 'Research/agents/AI agent memory.md', path: 'Research/agents/AI agent memory.md' },
+    { id: 'Work/market/pricing research.md', path: 'Work/market/pricing research.md' },
+    { id: 'Research/market/market landscape.md', path: 'Research/market/market landscape.md' },
+  ];
+  const model = core.buildHybridGraph(
+    core.createGraph(documents.map((document) => document.id)),
+    documents,
+    {
+      priorityKeywords: 'AI',
+      projectWeight: 0,
+      semanticWeight: 4,
+      semanticThreshold: 0.04,
+    }
+  );
+  const analysis = core.analyzeGraph(model.graph, {
+    documents: model.documents,
+    priorityKeywords: model.priorityKeywords,
+    projectFirst: false,
+    maxCommunities: 4,
+    minCommunitySize: 2,
+  });
+
+  assert.equal(
+    analysis.assignments.get(documents[0].id),
+    analysis.assignments.get(documents[1].id)
+  );
+  assert.ok(analysis.clusters.some((cluster) => cluster.label === 'AI'));
+});

@@ -2,22 +2,24 @@
 
 [简体中文](README.zh-CN.md)
 
-Graph Communities turns Obsidian's gray graph into a structural knowledge map.
-It automatically detects densely linked note communities, gives each major hub a
-distinct color, and blends those colors through the link network. Notes with
-similar relationships therefore look similar, while boundary notes visibly mix
-the colors of the communities they connect.
+Graph Communities turns Obsidian's gray graph into a topic-aware knowledge map.
+It groups notes primarily by project/folder and strengthens those groups with
+local keyword and metadata similarity. Each major topic gets a distinct color;
+related topics and bridge notes receive visually related blended colors.
 
 ## What it does
 
-- Detects communities from Obsidian's resolved internal links.
-- Selects the highest-degree note as the visible hub of each community.
+- Detects projects automatically from the vault's folder structure.
+- Uses titles, paths, tags, aliases, headings, and links as local grouping signals.
+- Supports priority keywords such as `AI`, `LLM`, `ASR`, or your own project names.
+- Downweights generic navigation notes such as README, index, overview, and resources.
+- Selects an informative note—not a navigation file—as the community representative.
 - Assigns a distinct, dark-theme-friendly color to every major hub.
 - Propagates community affinity through nearby links.
 - Blends colors for bridge notes that connect multiple communities.
 - Colors links from their endpoint colors and dims cross-community links.
 - Works in both global and local graph views.
-- Shows an optional legend with each hub and community size.
+- Shows an optional legend with human-readable topic/project names and community sizes.
 - Runs locally and never changes note content.
 
 ## Visual model
@@ -58,8 +60,12 @@ Restart or reload Obsidian after installing a new build.
 
 | Setting | Default | Effect |
 | --- | ---: | --- |
-| Maximum communities | 9 | Limits the number of major hub colors |
+| Maximum communities | 12 | Limits the number of major topic/project colors |
 | Minimum community size | 3 | Keeps tiny fragments neutral or merges them |
+| Topic-aware clustering | On | Combines projects, keywords, metadata, and links |
+| Priority topic keywords | AI, LLM, ASR, RAG, Agent | Terms that influence grouping and labels |
+| Project/folder influence | 5.0 | Keeps notes in the same detected project together |
+| Keyword similarity influence | 1.4 | Connects notes with similar local metadata |
 | Clustering resolution | 1.0 | Lower = fewer broad groups; higher = more groups |
 | Relationship blending | 0.52 | Higher = stronger color mixing across links |
 | Blending distance | 4 | Number of link hops used for color propagation |
@@ -71,18 +77,20 @@ metadata cache resolves or Markdown files change.
 
 ## How the algorithm works
 
-1. Build a weighted, undirected graph from Obsidian's resolved links. Multiple
-   links between the same notes increase their edge weight.
-2. Run a deterministic, dependency-free Louvain pass to maximize modularity.
-3. Keep the largest communities and merge small linked fragments into their
-   strongest neighboring community.
-4. Pick the highest weighted-degree note as each community's hub.
-5. Diffuse community-affinity vectors through neighboring notes for a configured
+1. Detect project boundaries from meaningful folder names. Structural folders
+   such as `docs`, `src`, `references`, and `archive` are skipped when possible.
+2. Build local keyword vectors from filenames, paths, tags, aliases, and headings.
+3. Combine project edges and keyword similarity with downweighted internal links.
+4. Assign one base community per major project; the deterministic Louvain model
+   remains available when project-first grouping is disabled in code.
+5. Pick an informative representative while heavily penalizing README/index notes.
+6. Diffuse community-affinity vectors through neighboring notes for a configured
    number of graph hops.
-6. Mix the community palette in linear RGB space from each node's affinity
+7. Mix the community palette in linear RGB space from each node's affinity
    vector. This produces smooth, relationship-aware transition colors.
 
-The model is structural: it uses links, not note text or cloud embeddings.
+The model is local and metadata-based. It does not read body paragraphs, call a
+cloud embedding service, or send vault data over the network.
 
 ## Privacy and safety
 

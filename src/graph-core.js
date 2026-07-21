@@ -15,6 +15,23 @@ const DEFAULT_PALETTE = [
   '#6FD0FF',
 ];
 
+const GENERIC_DOCUMENT_NAMES = new Set([
+  'readme', 'index', 'home', 'homepage', 'overview', 'summary', 'contents',
+  'toc', 'moc', 'dashboard', 'start', 'welcome', 'docs', 'documentation',
+  'resources', 'changelog', 'license', 'contributing', 'sitemap', 'agents',
+  'skills', 'library', 'internal', 'site', 'sources', 'source', 'src',
+  'references', 'reference', 'examples', 'example', 'tests', 'test', 'github',
+  'workflows', 'workflow', 'markdown', 'lectures', 'archive', 'legacy',
+  'skill output samples', 'release plans', 'issues archive', 'content',
+  '首页', '主页', '目录', '索引', '导航', '总览', '概览', '说明', '欢迎',
+]);
+
+const GENERIC_TERMS = new Set([
+  ...GENERIC_DOCUMENT_NAMES,
+  'note', 'notes', 'file', 'files', 'document', 'documents', '项目', '文档',
+  '笔记', '内容', '相关', '记录', '工作', '资料', '文件', '知识库',
+]);
+
 function createGraph(nodeIds = []) {
   const graph = new Map();
   for (const id of nodeIds) ensureNode(graph, id);
@@ -59,6 +76,328 @@ function graphFromResolvedLinks(resolvedLinks = {}, nodeIds = []) {
     }
   }
   return graph;
+}
+
+function cloneGraph(graph, weightTransform = (_source, _target, weight) => weight) {
+  const cloned = createGraph(graph.keys());
+  const seen = new Set();
+  for (const [source, neighbors] of graph.entries()) {
+    for (const [target, weight] of neighbors.entries()) {
+      const key = source < target ? `${source}\u0000${target}` : `${target}\u0000${source}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      addUndirectedEdge(cloned, source, target, weightTransform(source, target, weight));
+    }
+  }
+  return cloned;
+}
+
+function humanizeSegment(value) {
+  return String(value || '')
+    .replace(/\.md$/i, '')
+    .replace(/^\d{1,3}(?:[._-]|\s)+/u, '')
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizedTerm(value) {
+  return humanizeSegment(value).normalize('NFKC').toLocaleLowerCase().trim();
+}
+
+function basenameWithoutExtension(id) {
+  const parts = String(id || '').split('/');
+  return (parts.pop() || '').replace(/\.md$/i, '');
+}
+
+function isGenericLabel(value) {
+  const normalized = normalizedTerm(value).replace(/\s+/g, '');
+  if (!normalized) return true;
+  if (GENERIC_DOCUMENT_NAMES.has(normalized)) return true;
+  return /(?:readme|index|homepage|dashboard|overview|contents|目录|索引|导航|首页|总览|概览)/iu.test(normalized);
+}
+
+function isNavigationDocument(id, document = {}) {
+  if (document.navigation != null) return Boolean(document.navigation);
+  const values = [basenameWithoutExtension(id), document.title, ...(document.aliases || [])];
+  return values.filter(Boolean).some((value) => isGenericLabel(value));
+}
+
+function tokenizeSemanticText(value) {
+  const normalized = String(value || '').normalize('NFKC').toLocaleLowerCase();
+  const terms = new Set();
+  for (const match of normalized.matchAll(/[a-z][a-z0-9+#.]{1,}/giu)) {
+    const term = match[0].replace(/^[._-]+|[._-]+$/g, '');
+    if (term.length >= 2 && !GENERIC_TERMS.has(term)) terms.add(term);
+  }
+  for (const match of normalized.matchAll(/[\p{Script=Han}]{2,}/gu)) {
+    const chunk = match[0];
+    if (chunk.length <= 10 && !GENERIC_TERMS.has(chunk)) terms.add(chunk);
+    const maximum = Math.min(4, chunk.length);
+    for (let size = 2; size <= maximum; size += 1) {
+      for (let index = 0; index <= chunk.length - size && index < 18; index += 1) {
+        const term = chunk.slice(index, index + size);
+        if (!GENERIC_TERMS.has(term)) terms.add(term);
+      }
+    }
+  }
+  return [...terms];
+}
+
+function addFeature(target, term, weight) {
+  const key = normalizedTerm(term);
+  if (!key || GENERIC_TERMS.has(key)) return;
+  target.set(key, Math.max(target.get(key) || 0, weight));
+}
+
+function addTextFeatures(target, value, weight) {
+  for (const term of tokenizeSemanticText(value)) addFeature(target, term, weight);
+}
+
+function parsePriorityKeywords(value) {
+  const entries = Array.isArray(value)
+    ? value
+    : String(value || '').split(/[,，;；\n]+/u);
+  return [...new Set(entries.map((entry) => normalizedTerm(entry)).filter(Boolean))];
+}
+
+function normalizeDocumentInput(input, graph) {
+  const source = input instanceof Map
+    ? [...input.entries()].map(([id, value]) => ({ id, ...(value || {}) }))
+    : Array.isArray(input) ? input : [];
+  const byId = new Map(source.map((document) => [String(document.id || document.path), document]));
+  const documents = new Map();
+  for (const id of graph.keys()) {
+    const raw = byId.get(id) || {};
+    const path = String(raw.path || id);
+    documents.set(id, {
+      id,
+      path,
+      title: String(raw.title || basenameWithoutExtension(path)),
+      aliases: asStringArray(raw.aliases),
+      tags: asStringArray(raw.tags).map((tag) => tag.replace(/^#/, '')),
+      headings: asStringArray(raw.headings).slice(0, 16),
+      navigation: raw.navigation,
+    });
+  }
+  return documents;
+}
+
+function asStringArray(value) {
+  if (Array.isArray(value)) return value.flatMap(asStringArray).filter(Boolean);
+  if (value == null) return [];
+  return String(value).split(/[,，]/u).map((entry) => entry.trim()).filter(Boolean);
+}
+
+function deriveProjectAssignments(documents, options = {}) {
+  const maximumSize = clamp(Math.round(numericOption(options, 'projectMaxSize', 1200)), 10, 4000);
+  const counts = new Map();
+  for (const document of documents.values()) {
+    const directories = document.path.split('/').slice(0, -1);
+    for (let depth = 1; depth <= directories.length; depth += 1) {
+      const prefix = directories.slice(0, depth).join('/');
+      counts.set(prefix, (counts.get(prefix) || 0) + 1);
+    }
+  }
+
+  const projects = new Map();
+  for (const document of documents.values()) {
+    const directories = document.path.split('/').slice(0, -1);
+    const prefixes = directories.map((_, index) => directories.slice(0, index + 1).join('/'));
+    if (!prefixes.length) {
+      projects.set(document.id, {
+        key: `@root:${document.id}`,
+        label: humanizeSegment(document.title) || 'Root',
+        size: 1,
+      });
+      continue;
+    }
+    let selected = prefixes.find((prefix) => {
+      const label = humanizeSegment(prefix.split('/').pop());
+      const count = counts.get(prefix) || 0;
+      return count >= 2 && count <= maximumSize && !isGenericLabel(label);
+    });
+    if (!selected) {
+      selected = [...prefixes].reverse().find((prefix) => {
+        const label = humanizeSegment(prefix.split('/').pop());
+        return (counts.get(prefix) || 0) >= 2 && !isGenericLabel(label);
+      });
+    }
+    if (!selected && prefixes.length) selected = prefixes[0];
+    const rawLabel = selected ? selected.split('/').pop() : 'Root';
+    const projectLabel = humanizeSegment(rawLabel) || 'Root';
+    projects.set(document.id, {
+      key: selected || 'Root',
+      label: projectLabel,
+      size: selected ? counts.get(selected) || 1 : 1,
+    });
+  }
+  return projects;
+}
+
+function buildDocumentFeatures(documents, projects, options = {}) {
+  const priorityKeywords = parsePriorityKeywords(options.priorityKeywords);
+  const features = new Map();
+  for (const document of documents.values()) {
+    const vector = new Map();
+    const labelTerms = new Map();
+    const project = projects.get(document.id);
+    addTextFeatures(vector, document.title, 3.6);
+    addTextFeatures(labelTerms, document.title, 3.6);
+    for (const alias of document.aliases) {
+      addTextFeatures(vector, alias, 3.1);
+      addTextFeatures(labelTerms, alias, 3.1);
+    }
+    for (const tag of document.tags) {
+      addTextFeatures(vector, tag, 4.8);
+      addTextFeatures(labelTerms, tag, 4.8);
+    }
+    const pathSegments = document.path.split('/').slice(0, -1).map(humanizeSegment);
+    pathSegments.forEach((segment, index) => {
+      const weight = index === pathSegments.length - 1 ? 2.8 : 1.9;
+      addTextFeatures(vector, segment, weight);
+      addTextFeatures(labelTerms, segment, weight * 0.75);
+    });
+    for (const heading of document.headings) addTextFeatures(vector, heading, 1.15);
+
+    const searchable = [
+      document.path,
+      document.title,
+      ...document.aliases,
+      ...document.tags,
+      ...document.headings,
+    ].join(' ').normalize('NFKC').toLocaleLowerCase();
+    const priorityMatches = priorityKeywords.filter((keyword) => searchable.includes(keyword));
+    for (const keyword of priorityMatches) {
+      vector.set(`@priority:${keyword}`, 4);
+      labelTerms.set(keyword, 8);
+    }
+    if (project && !isGenericLabel(project.label)) labelTerms.set(project.label, 5);
+    features.set(document.id, { vector, labelTerms, priorityMatches });
+  }
+  return { features, priorityKeywords };
+}
+
+function buildHybridGraph(linkGraph, documentInput = [], options = {}) {
+  const documents = normalizeDocumentInput(documentInput, linkGraph);
+  const projects = deriveProjectAssignments(documents, options);
+  const { features, priorityKeywords } = buildDocumentFeatures(documents, projects, options);
+  const linkWeight = clamp(numericOption(options, 'linkWeight', 0.65), 0, 10);
+  const navigationPenalty = clamp(numericOption(options, 'navigationLinkPenalty', 0.08), 0, 1);
+  const graph = cloneGraph(linkGraph, (source, target, weight) => {
+    const sourceNavigation = isNavigationDocument(source, documents.get(source));
+    const targetNavigation = isNavigationDocument(target, documents.get(target));
+    return weight * linkWeight * (sourceNavigation || targetNavigation ? navigationPenalty : 1);
+  });
+
+  addProjectEdges(graph, projects, options);
+  addSemanticEdges(graph, features, options);
+  for (const [id, document] of documents.entries()) {
+    const project = projects.get(id);
+    const feature = features.get(id);
+    document.projectKey = project && project.key;
+    document.projectLabel = project && project.label;
+    document.labelTerms = feature && feature.labelTerms;
+    document.priorityMatches = feature && feature.priorityMatches;
+    document.navigation = isNavigationDocument(id, document);
+  }
+  return { graph, documents, projects, features, priorityKeywords };
+}
+
+function addProjectEdges(graph, projects, options = {}) {
+  const weight = clamp(numericOption(options, 'projectWeight', 5), 0, 10);
+  const neighbors = clamp(Math.round(numericOption(options, 'projectNeighbors', 3)), 0, 12);
+  if (weight <= 0 || neighbors <= 0) return;
+  const groups = new Map();
+  for (const [id, project] of projects.entries()) {
+    if (!groups.has(project.key)) groups.set(project.key, []);
+    groups.get(project.key).push(id);
+  }
+  for (const members of groups.values()) {
+    members.sort((a, b) => a.localeCompare(b));
+    if (members.length < 2) continue;
+    const seen = new Set();
+    const span = Math.min(neighbors, members.length - 1);
+    for (let index = 0; index < members.length; index += 1) {
+      for (let offset = 1; offset <= span; offset += 1) {
+        const targetIndex = (index + offset) % members.length;
+        const source = members[index];
+        const target = members[targetIndex];
+        const key = source < target ? `${source}\u0000${target}` : `${target}\u0000${source}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        addUndirectedEdge(graph, source, target, weight / Math.sqrt(offset));
+      }
+    }
+  }
+}
+
+function addSemanticEdges(graph, features, options = {}) {
+  const weight = clamp(numericOption(options, 'semanticWeight', 1.4), 0, 12);
+  const neighborLimit = clamp(Math.round(numericOption(options, 'semanticNeighbors', 10)), 0, 30);
+  const minimumSimilarity = clamp(numericOption(options, 'semanticThreshold', 0.08), 0, 1);
+  if (weight <= 0 || neighborLimit <= 0) return;
+
+  const documentCount = Math.max(1, features.size);
+  const postings = new Map();
+  for (const [id, feature] of features.entries()) {
+    for (const [term, value] of feature.vector.entries()) {
+      if (!postings.has(term)) postings.set(term, []);
+      postings.get(term).push([id, value]);
+    }
+  }
+  const norms = new Map([...features.keys()].map((id) => [id, 0]));
+  const weightedPostings = new Map();
+  for (const [term, entries] of postings.entries()) {
+    if (entries.length < 2) continue;
+    const idf = Math.log((documentCount + 1) / (entries.length + 1)) + 1;
+    const weighted = entries.map(([id, value]) => [id, value * idf]);
+    weightedPostings.set(term, weighted);
+    for (const [id, value] of weighted) norms.set(id, (norms.get(id) || 0) + value * value);
+  }
+  for (const [id, value] of norms.entries()) norms.set(id, Math.sqrt(value) || 1);
+
+  const dots = new Map();
+  const maximumPosting = Math.max(24, Math.round(documentCount * 0.16));
+  for (const [term, entries] of weightedPostings.entries()) {
+    const isPriority = term.startsWith('@priority:');
+    if (!isPriority && entries.length > maximumPosting) continue;
+    entries.sort((a, b) => a[0].localeCompare(b[0]));
+    const span = entries.length <= 48 ? entries.length - 1 : 8;
+    for (let index = 0; index < entries.length; index += 1) {
+      for (let offset = 1; offset <= span && offset < entries.length; offset += 1) {
+        const targetIndex = (index + offset) % entries.length;
+        if (index === targetIndex) continue;
+        const [source, sourceValue] = entries[index];
+        const [target, targetValue] = entries[targetIndex];
+        const key = source < target ? `${source}\u0000${target}` : `${target}\u0000${source}`;
+        dots.set(key, (dots.get(key) || 0) + sourceValue * targetValue);
+      }
+    }
+  }
+
+  const candidates = new Map([...features.keys()].map((id) => [id, []]));
+  for (const [key, dot] of dots.entries()) {
+    const [source, target] = key.split('\u0000');
+    const similarity = dot / ((norms.get(source) || 1) * (norms.get(target) || 1));
+    if (similarity < minimumSimilarity) continue;
+    candidates.get(source).push({ source, target, similarity });
+    candidates.get(target).push({ source, target, similarity });
+  }
+  const selected = new Map();
+  for (const edges of candidates.values()) {
+    edges.sort((a, b) => b.similarity - a.similarity || a.target.localeCompare(b.target));
+    for (const edge of edges.slice(0, neighborLimit)) {
+      const key = edge.source < edge.target
+        ? `${edge.source}\u0000${edge.target}`
+        : `${edge.target}\u0000${edge.source}`;
+      selected.set(key, Math.max(selected.get(key) || 0, edge.similarity));
+    }
+  }
+  for (const [key, similarity] of selected.entries()) {
+    const [source, target] = key.split('\u0000');
+    addUndirectedEdge(graph, source, target, similarity * weight);
+  }
 }
 
 function weightedDegree(graph, node) {
@@ -234,6 +573,13 @@ function consolidateCommunities(graph, rawPartition, options = {}) {
     1,
     1000
   );
+  const documents = options.documents instanceof Map ? options.documents : new Map();
+  const hasProjects = [...documents.values()].some(
+    (document) => document.projectKey && !document.projectKey.startsWith('@root:')
+  );
+  if (hasProjects && options.projectFirst !== false) {
+    return consolidateByProject(graph, documents, maxCommunities, minCommunitySize);
+  }
   const groups = new Map();
   for (const node of graph.keys()) {
     if (weightedDegree(graph, node) <= 0) continue;
@@ -247,13 +593,34 @@ function consolidateCommunities(graph, rawPartition, options = {}) {
       raw,
       nodes,
       score: nodes.reduce((sum, node) => sum + weightedDegree(graph, node), 0),
+      projectKey: dominantProjectKey(nodes, documents),
     }))
     .sort((a, b) => b.score - a.score || b.nodes.length - a.nodes.length || a.raw - b.raw);
 
   let eligible = ranked.filter((group) => group.nodes.length >= minCommunitySize);
   if (!eligible.length && ranked.length) eligible = [ranked[0]];
-  const kept = eligible.slice(0, maxCommunities);
+  const kept = [];
+  const usedProjects = new Set();
+  for (const group of eligible) {
+    if (kept.length >= maxCommunities) break;
+    if (group.projectKey && usedProjects.has(group.projectKey)) continue;
+    kept.push(group);
+    if (group.projectKey) usedProjects.add(group.projectKey);
+  }
+  const preferProjectDiversity = documents.size > 0 && options.preferProjectDiversity !== false;
+  if (!preferProjectDiversity) {
+    for (const group of eligible) {
+      if (kept.length >= maxCommunities) break;
+      if (!kept.includes(group)) kept.push(group);
+    }
+  }
   const keptRaw = new Map(kept.map((group, index) => [group.raw, index]));
+  const keptProject = new Map();
+  for (const group of kept) {
+    if (group.projectKey && !keptProject.has(group.projectKey)) {
+      keptProject.set(group.projectKey, keptRaw.get(group.raw));
+    }
+  }
   const assignments = new Map([...graph.keys()].map((node) => [node, -1]));
   for (const group of kept) {
     const finalCommunity = keptRaw.get(group.raw);
@@ -271,12 +638,16 @@ function consolidateCommunities(graph, rawPartition, options = {}) {
         weights.set(finalCommunity, (weights.get(finalCommunity) || 0) + weight);
       }
     }
-    let best = -1;
+    let best = group.projectKey && keptProject.has(group.projectKey)
+      ? keptProject.get(group.projectKey)
+      : -1;
     let bestWeight = 0;
-    for (const [community, weight] of weights.entries()) {
-      if (weight > bestWeight || (weight === bestWeight && community < best)) {
-        best = community;
-        bestWeight = weight;
+    if (best < 0) {
+      for (const [community, weight] of weights.entries()) {
+        if (weight > bestWeight || (weight === bestWeight && community < best)) {
+          best = community;
+          bestWeight = weight;
+        }
       }
     }
     for (const node of group.nodes) assignments.set(node, best);
@@ -284,7 +655,75 @@ function consolidateCommunities(graph, rawPartition, options = {}) {
   return assignments;
 }
 
-function chooseHubs(graph, assignments) {
+function consolidateByProject(graph, documents, maxCommunities, minCommunitySize) {
+  const projectGroups = new Map();
+  for (const node of graph.keys()) {
+    const document = documents.get(node) || {};
+    const key = document.projectKey;
+    if (!key || key.startsWith('@root:')) continue;
+    if (!projectGroups.has(key)) {
+      projectGroups.set(key, { key, label: document.projectLabel, nodes: [] });
+    }
+    projectGroups.get(key).nodes.push(node);
+  }
+  const ranked = [...projectGroups.values()]
+    .filter((group) => group.nodes.length >= minCommunitySize)
+    .map((group) => ({
+      ...group,
+      score: group.nodes.reduce((sum, node) => sum + weightedDegree(graph, node), 0),
+    }))
+    .sort((a, b) => b.nodes.length - a.nodes.length || b.score - a.score || a.key.localeCompare(b.key));
+  if (!ranked.length) return new Map([...graph.keys()].map((node) => [node, -1]));
+
+  const kept = ranked.slice(0, maxCommunities);
+  const communityByProject = new Map(kept.map((group, index) => [group.key, index]));
+  const assignments = new Map([...graph.keys()].map((node) => [node, -1]));
+  for (const group of kept) {
+    const community = communityByProject.get(group.key);
+    for (const node of group.nodes) assignments.set(node, community);
+  }
+
+  for (const group of ranked.slice(maxCommunities)) {
+    const weights = new Map();
+    for (const node of group.nodes) {
+      for (const [neighbor, weight] of (graph.get(node) || new Map()).entries()) {
+        const community = assignments.get(neighbor);
+        if (community == null || community < 0) continue;
+        weights.set(community, (weights.get(community) || 0) + weight);
+      }
+    }
+    const best = [...weights.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0] - b[0])[0]?.[0] ?? -1;
+    for (const node of group.nodes) assignments.set(node, best);
+  }
+
+  for (const node of graph.keys()) {
+    if ((assignments.get(node) ?? -1) >= 0) continue;
+    const weights = new Map();
+    for (const [neighbor, weight] of (graph.get(node) || new Map()).entries()) {
+      const community = assignments.get(neighbor);
+      if (community == null || community < 0) continue;
+      weights.set(community, (weights.get(community) || 0) + weight);
+    }
+    const best = [...weights.entries()]
+      .sort((a, b) => b[1] - a[1] || a[0] - b[0])[0]?.[0];
+    if (best != null) assignments.set(node, best);
+  }
+  return assignments;
+}
+
+function dominantProjectKey(nodes, documents) {
+  const counts = new Map();
+  for (const node of nodes) {
+    const key = documents.get(node) && documents.get(node).projectKey;
+    if (!key) continue;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0];
+}
+
+function chooseHubs(graph, assignments, documents = new Map()) {
   const clusters = new Map();
   for (const [node, community] of assignments.entries()) {
     if (community < 0) continue;
@@ -294,12 +733,84 @@ function chooseHubs(graph, assignments) {
   const hubs = new Map();
   for (const [community, nodes] of clusters.entries()) {
     nodes.sort((a, b) => {
-      const degreeDifference = weightedDegree(graph, b) - weightedDegree(graph, a);
-      return degreeDifference || a.localeCompare(b);
+      const scoreDifference = representativeScore(graph, b, documents.get(b)) -
+        representativeScore(graph, a, documents.get(a));
+      return scoreDifference || a.localeCompare(b);
     });
     hubs.set(community, nodes[0]);
   }
   return hubs;
+}
+
+function representativeScore(graph, node, document = {}) {
+  const degreeScore = Math.log1p(weightedDegree(graph, node));
+  const titleTerms = tokenizeSemanticText(document.title || basenameWithoutExtension(node));
+  const informationBonus = 1 + Math.min(0.45, titleTerms.length * 0.045);
+  const navigationFactor = isNavigationDocument(node, document) ? 0.06 : 1;
+  return degreeScore * informationBonus * navigationFactor;
+}
+
+function summarizeCommunity(nodes, documents, priorityKeywords = [], preferProjects = true) {
+  const projectScores = new Map();
+  const priorityScores = new Map();
+  const termScores = new Map();
+  for (const node of nodes) {
+    const document = documents.get(node) || {};
+    if (document.projectLabel && !isGenericLabel(document.projectLabel)) {
+      projectScores.set(
+        document.projectLabel,
+        (projectScores.get(document.projectLabel) || 0) + 1
+      );
+    }
+    for (const keyword of document.priorityMatches || []) {
+      priorityScores.set(keyword, (priorityScores.get(keyword) || 0) + 1);
+    }
+    for (const [term, weight] of document.labelTerms || []) {
+      if (isGenericLabel(term) || GENERIC_TERMS.has(normalizedTerm(term))) continue;
+      termScores.set(term, (termScores.get(term) || 0) + weight);
+    }
+  }
+
+  const rank = (scores) => [...scores.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const priorityOrder = new Map(priorityKeywords.map((keyword, index) => [keyword, index]));
+  const priorityRanked = rank(priorityScores).sort((a, b) => {
+    const aOrder = priorityOrder.has(a[0]) ? priorityOrder.get(a[0]) : Number.MAX_SAFE_INTEGER;
+    const bOrder = priorityOrder.has(b[0]) ? priorityOrder.get(b[0]) : Number.MAX_SAFE_INTEGER;
+    return aOrder - bOrder || b[1] - a[1] || a[0].localeCompare(b[0]);
+  });
+  const projectRanked = rank(projectScores);
+  const termRanked = rank(termScores);
+  const strongPriorityMinimum = Math.max(2, Math.ceil(nodes.length * 0.55));
+  const fallbackPriorityMinimum = Math.max(2, Math.ceil(nodes.length * 0.25));
+  const projectMinimum = Math.max(2, Math.ceil(nodes.length * 0.15));
+  let label;
+  if (preferProjects && projectRanked[0] && projectRanked[0][1] >= projectMinimum) {
+    label = projectRanked[0][0];
+  } else if (priorityRanked[0] && priorityRanked[0][1] >= strongPriorityMinimum) {
+    label = priorityRanked[0][0];
+  } else if (priorityRanked[0] && priorityRanked[0][1] >= fallbackPriorityMinimum) {
+    label = priorityRanked[0][0];
+  } else if (projectRanked[0] && projectRanked[0][1] >= projectMinimum) {
+    label = projectRanked[0][0];
+  } else if (termRanked[0]) {
+    label = termRanked[0][0];
+  } else {
+    label = 'Community';
+  }
+  const keywords = [...new Set([
+    ...priorityRanked.map(([term]) => term),
+    ...projectRanked.map(([term]) => term),
+    ...termRanked.map(([term]) => term),
+  ])]
+    .filter((term) => term !== label && !isGenericLabel(term))
+    .sort((a, b) => {
+      const aPriority = priorityOrder.has(a) ? priorityOrder.get(a) : Number.MAX_SAFE_INTEGER;
+      const bPriority = priorityOrder.has(b) ? priorityOrder.get(b) : Number.MAX_SAFE_INTEGER;
+      return aPriority - bPriority;
+    })
+    .slice(0, 4);
+  return { label: humanizeSegment(label) || 'Community', keywords };
 }
 
 function normalizeVector(vector) {
@@ -473,9 +984,13 @@ function colorize(graph, assignments, hubs, affinities, options = {}) {
 }
 
 function analyzeGraph(graph, options = {}) {
-  const rawPartition = louvainPartition(graph, options);
-  const assignments = consolidateCommunities(graph, rawPartition, options);
-  const hubs = chooseHubs(graph, assignments);
+  const documents = options.documents instanceof Map
+    ? options.documents
+    : normalizeDocumentInput(options.documents || [], graph);
+  const analysisOptions = { ...options, documents };
+  const rawPartition = louvainPartition(graph, analysisOptions);
+  const assignments = consolidateCommunities(graph, rawPartition, analysisOptions);
+  const hubs = chooseHubs(graph, assignments, documents);
   const affinities = propagateAffinities(
     graph,
     assignments,
@@ -484,13 +999,35 @@ function analyzeGraph(graph, options = {}) {
     options
   );
   const { colors, palette } = colorize(graph, assignments, hubs, affinities, options);
+  const usedLabels = new Map();
+  const usedFinalLabels = new Set();
   const clusters = [...hubs.entries()].map(([id, hub]) => {
     const nodes = [...assignments.entries()]
       .filter(([, community]) => community === id)
       .map(([node]) => node);
+    const summary = summarizeCommunity(
+      nodes,
+      documents,
+      options.priorityKeywords || [],
+      options.projectFirst !== false
+    );
+    const baseLabel = displayTopicLabel(summary.label);
+    let label = baseLabel;
+    const duplicateCount = usedLabels.get(baseLabel) || 0;
+    if (duplicateCount > 0) {
+      const qualifier = summary.keywords.find(
+        (keyword) => displayTopicLabel(keyword) !== baseLabel
+      );
+      label = qualifier ? `${label} · ${displayTopicLabel(qualifier)}` : `${label} ${duplicateCount + 1}`;
+    }
+    if (usedFinalLabels.has(label)) label = `${label} ${duplicateCount + 1}`;
+    usedLabels.set(baseLabel, duplicateCount + 1);
+    usedFinalLabels.add(label);
     return {
       id,
       hub,
+      label,
+      keywords: summary.keywords.map(displayTopicLabel),
       color: palette[id],
       colorHex: rgbIntToHex(palette[id]),
       size: nodes.length,
@@ -508,6 +1045,11 @@ function analyzeGraph(graph, options = {}) {
     nodeCount: graph.size,
     edgeWeight: totalEdgeWeight(graph),
   };
+}
+
+function displayTopicLabel(value) {
+  const label = humanizeSegment(value) || 'Community';
+  return /^[a-z][a-z0-9+#.]{1,4}$/i.test(label) ? label.toUpperCase() : label;
 }
 
 function colorDistance(a, b) {
@@ -529,6 +1071,7 @@ module.exports = {
   addUndirectedEdge,
   analyzeGraph,
   blendRgbInts,
+  buildHybridGraph,
   buildWeightedGraph,
   chooseHubs,
   colorDistance,
@@ -537,9 +1080,12 @@ module.exports = {
   ensureNode,
   graphFromResolvedLinks,
   hexToRgbInt,
+  humanizeSegment,
+  isNavigationDocument,
   louvainPartition,
   mixRgb,
   propagateAffinities,
+  parsePriorityKeywords,
   rgbIntToHex,
   totalEdgeWeight,
   weightedDegree,

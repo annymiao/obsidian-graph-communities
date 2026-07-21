@@ -1,7 +1,7 @@
 {
   "name": "obsidian-graph-communities",
-  "version": "0.1.0",
-  "description": "Automatic community detection and relationship-aware coloring for Obsidian graph views.",
+  "version": "0.2.0",
+  "description": "Project- and keyword-aware community coloring for Obsidian graph views.",
   "private": false,
   "license": "MIT",
   "author": "annymiao",

@@ -22,10 +22,12 @@ for (const relativePath of relativePaths) {
 }
 
 const edges = [];
+const documents = [];
 let resolvedLinkCount = 0;
 for (let index = 0; index < files.length; index += 1) {
   const source = relativePaths[index];
   const text = await readFile(files[index], 'utf8');
+  documents.push(extractDocument(source, text));
   for (const match of text.matchAll(/\[\[([^\]]+)\]\]/g)) {
     const rawTarget = match[1].split('|', 1)[0].split('#', 1)[0].split('^', 1)[0].trim();
     if (!rawTarget) continue;
@@ -50,13 +52,23 @@ for (let index = 0; index < files.length; index += 1) {
   }
 }
 
-const graph = core.buildWeightedGraph(edges, relativePaths);
-const analysis = core.analyzeGraph(graph, {
-  maxCommunities: 9,
+const linkGraph = core.buildWeightedGraph(edges, relativePaths);
+const model = core.buildHybridGraph(linkGraph, documents, {
+  priorityKeywords: 'AI, LLM, ASR, RAG, Agent, 儿童陪伴, 产品规划, 竞品, 合规, 工业设计, 端侧研发',
+  projectWeight: 5,
+  semanticWeight: 1.4,
+  linkWeight: 0.65,
+  navigationLinkPenalty: 0.08,
+  projectMaxSize: 1200,
+});
+const analysis = core.analyzeGraph(model.graph, {
+  maxCommunities: 12,
   minCommunitySize: 3,
   resolution: 1,
   propagationSteps: 4,
   propagationStrength: 0.52,
+  documents: model.documents,
+  priorityKeywords: model.priorityKeywords,
 });
 
 console.log(JSON.stringify({
@@ -65,8 +77,66 @@ console.log(JSON.stringify({
   communityCount: analysis.clusters.length,
   classifiedNotes: analysis.nodeCount - analysis.neutralCount,
   neutralNotes: analysis.neutralCount,
-  clusterSizes: analysis.clusters.map((cluster) => cluster.size),
+  detectedProjects: summarizeProjects(model.projects),
+  navigationRepresentativeCount: analysis.clusters.filter((cluster) =>
+    core.isNavigationDocument(cluster.hub, model.documents.get(cluster.hub))
+  ).length,
+  clusters: analysis.clusters.map((cluster) => ({
+    label: cluster.label,
+    size: cluster.size,
+    representative: cluster.hub,
+    keywords: cluster.keywords,
+    navigationRepresentative: core.isNavigationDocument(
+      cluster.hub,
+      model.documents.get(cluster.hub)
+    ),
+  })),
 }, null, 2));
+
+function summarizeProjects(projects) {
+  const counts = new Map();
+  for (const project of projects.values()) {
+    const key = `${project.label}\u0000${project.key}`;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([key, size]) => {
+      const [label, path] = key.split('\u0000');
+      return { label, path, size };
+    })
+    .filter((project) => project.size >= 2)
+    .sort((a, b) => b.size - a.size || a.label.localeCompare(b.label));
+}
+
+function extractDocument(source, text) {
+  const frontmatterMatch = text.match(/^---\s*\n([\s\S]*?)\n---\s*(?:\n|$)/u);
+  const frontmatter = frontmatterMatch ? frontmatterMatch[1] : '';
+  const frontmatterTitle = frontmatter.match(/^title:\s*["']?(.+?)["']?\s*$/imu);
+  const frontmatterTags = frontmatter.match(/^tags?:\s*(.+)$/imu);
+  const frontmatterAliases = frontmatter.match(/^aliases?:\s*(.+)$/imu);
+  const inlineTags = [...text.matchAll(/(?:^|\s)#([\p{L}\p{N}_/-]{2,})/gmu)]
+    .map((match) => match[1]);
+  const headings = [...text.matchAll(/^#{1,3}\s+(.+)$/gmu)]
+    .map((match) => match[1].trim())
+    .slice(0, 16);
+  return {
+    id: source,
+    path: source,
+    title: frontmatterTitle ? frontmatterTitle[1].trim() : path.basename(source, '.md'),
+    tags: [...splitMetadataList(frontmatterTags && frontmatterTags[1]), ...inlineTags],
+    aliases: splitMetadataList(frontmatterAliases && frontmatterAliases[1]),
+    headings,
+  };
+}
+
+function splitMetadataList(value) {
+  if (!value) return [];
+  return String(value)
+    .replace(/^\[|\]$/g, '')
+    .split(/[,，]/u)
+    .map((entry) => entry.trim().replace(/^["']|["']$/g, ''))
+    .filter(Boolean);
+}
 
 async function collectMarkdownFiles(directory) {
   const output = [];

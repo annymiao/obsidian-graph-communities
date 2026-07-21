@@ -12,8 +12,15 @@ const core = require('./graph-core');
 const DEFAULT_SETTINGS = {
   enabled: true,
   resolution: 1,
-  maxCommunities: 9,
+  maxCommunities: 12,
   minCommunitySize: 3,
+  topicAware: true,
+  priorityKeywords: 'AI, LLM, ASR, RAG, Agent',
+  projectWeight: 5,
+  semanticWeight: 1.4,
+  linkWeight: 0.65,
+  projectMaxSize: 1200,
+  navigationLinkPenalty: 0.08,
   propagationSteps: 4,
   propagationStrength: 0.52,
   hubAnchor: 0.72,
@@ -88,11 +95,42 @@ class GraphCommunitiesPlugin extends Plugin {
 
   buildGraph() {
     const files = this.app.vault.getMarkdownFiles();
-    const graph = core.graphFromResolvedLinks(
+    const linkGraph = core.graphFromResolvedLinks(
       this.app.metadataCache.resolvedLinks || {},
       files.map((file) => file.path)
     );
-    return graph;
+    const documents = files.map((file) => {
+      const cache = this.app.metadataCache.getFileCache
+        ? this.app.metadataCache.getFileCache(file) || {}
+        : {};
+      const frontmatter = cache.frontmatter || {};
+      const tags = [
+        ...(cache.tags || []).map((tag) => tag.tag),
+        ...toStringArray(frontmatter.tags),
+        ...toStringArray(frontmatter.tag),
+      ];
+      return {
+        id: file.path,
+        path: file.path,
+        title: frontmatter.title || displayName(file.path),
+        aliases: [
+          ...toStringArray(frontmatter.aliases),
+          ...toStringArray(frontmatter.alias),
+        ],
+        tags,
+        headings: (cache.headings || []).map((heading) => heading.heading),
+      };
+    });
+    return core.buildHybridGraph(linkGraph, documents, {
+      priorityKeywords: this.settings.priorityKeywords,
+      linkWeight: this.settings.topicAware ? this.settings.linkWeight : 1,
+      projectWeight: this.settings.topicAware ? this.settings.projectWeight : 0,
+      semanticWeight: this.settings.topicAware ? this.settings.semanticWeight : 0,
+      navigationLinkPenalty: this.settings.topicAware
+        ? this.settings.navigationLinkPenalty
+        : 1,
+      projectMaxSize: this.settings.projectMaxSize,
+    });
   }
 
   async recompute() {
@@ -100,8 +138,8 @@ class GraphCommunitiesPlugin extends Plugin {
       this.restoreAll();
       return;
     }
-    const graph = this.buildGraph();
-    this.analysis = core.analyzeGraph(graph, {
+    const model = this.buildGraph();
+    this.analysis = core.analyzeGraph(model.graph, {
       resolution: this.settings.resolution,
       maxCommunities: this.settings.maxCommunities,
       minCommunitySize: this.settings.minCommunitySize,
@@ -110,6 +148,9 @@ class GraphCommunitiesPlugin extends Plugin {
       hubAnchor: this.settings.hubAnchor,
       peripheralFade: this.settings.peripheralFade,
       neutralColor: this.settings.neutralColor,
+      documents: model.documents,
+      priorityKeywords: model.priorityKeywords,
+      projectFirst: this.settings.topicAware,
     });
     this.statusBar.setText(
       `Graph Communities: ${this.analysis.clusters.length} clusters · ${this.analysis.nodeCount} notes`
@@ -210,7 +251,7 @@ class GraphCommunitiesPlugin extends Plugin {
     legend.replaceChildren();
     const title = document.createElement('div');
     title.className = 'graph-communities-legend-title';
-    title.textContent = 'Graph communities';
+    title.textContent = 'Topic communities';
     legend.appendChild(title);
     for (const cluster of this.analysis.clusters) {
       const row = document.createElement('div');
@@ -220,7 +261,11 @@ class GraphCommunitiesPlugin extends Plugin {
       swatch.style.backgroundColor = cluster.colorHex;
       const label = document.createElement('span');
       label.className = 'graph-communities-label';
-      label.textContent = `${displayName(cluster.hub)} (${cluster.size})`;
+      label.textContent = `${cluster.label} (${cluster.size})`;
+      label.title = [
+        `Representative: ${displayName(cluster.hub)}`,
+        cluster.keywords.length ? `Keywords: ${cluster.keywords.join(', ')}` : '',
+      ].filter(Boolean).join(' · ');
       row.append(swatch, label);
       legend.appendChild(row);
     }
@@ -262,6 +307,12 @@ function displayName(path) {
   const value = String(path || 'Unknown');
   const basename = value.split('/').pop() || value;
   return basename.replace(/\.md$/i, '');
+}
+
+function toStringArray(value) {
+  if (Array.isArray(value)) return value.flatMap(toStringArray).filter(Boolean);
+  if (value == null) return [];
+  return String(value).split(/[,，]/u).map((entry) => entry.trim()).filter(Boolean);
 }
 
 class GraphCommunitiesSettingTab extends PluginSettingTab {
@@ -314,6 +365,57 @@ class GraphCommunitiesSettingTab extends PluginSettingTab {
           .setDynamicTooltip()
           .onChange(async (value) => {
             this.plugin.settings.minCommunitySize = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Topic-aware clustering')
+      .setDesc('Combine links with note titles, folders/projects, tags, aliases, and headings. Generic README/index notes are downweighted.')
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.topicAware).onChange(async (value) => {
+          this.plugin.settings.topicAware = value;
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName('Priority topic keywords')
+      .setDesc('Comma-separated terms that should strongly influence grouping and community labels, for example: AI, ASR, Project Atlas.')
+      .addTextArea((textArea) =>
+        textArea
+          .setPlaceholder('AI, LLM, ASR, Project Atlas')
+          .setValue(this.plugin.settings.priorityKeywords)
+          .onChange(async (value) => {
+            this.plugin.settings.priorityKeywords = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Project/folder influence')
+      .setDesc('How strongly notes from the same detected project directory stay together.')
+      .addSlider((slider) =>
+        slider
+          .setLimits(0, 5, 0.1)
+          .setValue(this.plugin.settings.projectWeight)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.plugin.settings.projectWeight = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Keyword similarity influence')
+      .setDesc('How strongly shared title, path, tag, alias, and heading terms affect grouping.')
+      .addSlider((slider) =>
+        slider
+          .setLimits(0, 5, 0.1)
+          .setValue(this.plugin.settings.semanticWeight)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.plugin.settings.semanticWeight = value;
             await this.plugin.saveSettings();
           })
       );
