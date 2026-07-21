@@ -1,0 +1,32 @@
+{
+  "name": "obsidian-graph-communities",
+  "version": "0.1.0",
+  "description": "Automatic community detection and relationship-aware coloring for Obsidian graph views.",
+  "private": false,
+  "license": "MIT",
+  "author": "annymiao",
+  "type": "commonjs",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check": "node --check src/graph-core.js && node --check src/plugin.js && node --check main.js",
+    "install:local": "node scripts/install-local.mjs",
+    "test": "node --test tests/*.test.js",
+    "verify": "node scripts/build.mjs && node --check main.js && node --test tests/*.test.js"
+  },
+  "keywords": [
+    "obsidian",
+    "obsidian-plugin",
+    "knowledge-graph",
+    "community-detection",
+    "louvain",
+    "graph-visualization"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/annymiao/obsidian-graph-communities.git"
+  },
+  "bugs": {
+    "url": "https://github.com/annymiao/obsidian-graph-communities/issues"
+  },
+  "homepage": "https://github.com/annymiao/obsidian-graph-communities#readme"
+}

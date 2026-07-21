@@ -1,0 +1,10 @@
+{
+  "id": "graph-communities",
+  "name": "Graph Communities",
+  "version": "0.1.0",
+  "minAppVersion": "1.7.0",
+  "description": "Automatically detects note communities and colors tightly connected notes with related colors.",
+  "author": "annymiao",
+  "authorUrl": "https://github.com/annymiao",
+  "isDesktopOnly": true
+}
