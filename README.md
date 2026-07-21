@@ -20,6 +20,7 @@ related topics and bridge notes receive visually related blended colors.
 - Colors links from their endpoint colors and dims cross-community links.
 - Works in both global and local graph views.
 - Shows an optional legend with human-readable topic/project names and community sizes.
+- Keeps graph selection and legend focus in sync: opening a node highlights its category, while clicking a category highlights all of its nodes and internal links.
 - Runs locally and never changes note content.
 
 ## Visual model
@@ -34,6 +35,13 @@ Node size remains controlled by Obsidian. Graph Communities changes color only:
 - **Color similarity** represents similarity in graph relationships.
 - **Mixed color** represents a boundary or bridge between communities.
 - **Soft neutral color** represents isolated or unclassified notes.
+
+## Interactive focus
+
+- Click a graph node to open it. Its category becomes selected in the legend and the node is emphasized.
+- Click a legend category to focus every node in that category and its internal links; unrelated nodes and links are dimmed.
+- Click the active category again, or run **Graph Communities: Clear graph community focus**, to restore the complete graph.
+- The currently selected note is shown above the legend categories.
 
 ## Installation
 

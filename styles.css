@@ -3,7 +3,7 @@
   z-index: 20;
   left: 14px;
   bottom: 14px;
-  width: min(260px, calc(100% - 28px));
+  width: min(300px, calc(100% - 28px));
   max-height: min(52vh, 420px);
   overflow: auto;
   padding: 10px 11px;
@@ -18,11 +18,20 @@
 }
 
 .graph-communities-legend-title {
-  margin-bottom: 7px;
+  margin-bottom: 3px;
   color: var(--text-muted);
   font-weight: var(--font-semibold);
   letter-spacing: 0.02em;
   text-transform: uppercase;
+}
+
+.graph-communities-legend-hint {
+  margin-bottom: 7px;
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: 0.88em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .graph-communities-legend-row {
@@ -30,7 +39,34 @@
   align-items: center;
   gap: 8px;
   min-width: 0;
-  padding: 3px 0;
+  margin: 1px -5px;
+  padding: 4px 5px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, opacity 120ms ease;
+}
+
+.graph-communities-legend-row:hover {
+  background: var(--background-modifier-hover);
+}
+
+.graph-communities-legend-row:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 1px;
+}
+
+.graph-communities-legend-row.is-active {
+  border-color: color-mix(in srgb, var(--interactive-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--interactive-accent) 17%, transparent);
+  color: var(--text-normal);
+  font-weight: var(--font-semibold);
+}
+
+.graph-communities-legend-row.is-active .graph-communities-swatch {
+  border-color: rgb(255 255 255 / 72%);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--interactive-accent) 62%, transparent),
+    0 0 12px currentColor;
 }
 
 .graph-communities-swatch {
