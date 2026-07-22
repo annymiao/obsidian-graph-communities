@@ -32,6 +32,6 @@ function indent(text, spaces) {
   const prefix = ' '.repeat(spaces);
   return text
     .split('\n')
-    .map((line) => `${prefix}${line}`)
+    .map((line) => line ? `${prefix}${line}` : '')
     .join('\n');
 }

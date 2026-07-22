@@ -3,7 +3,7 @@
   z-index: 20;
   left: 14px;
   bottom: 14px;
-  width: min(260px, calc(100% - 28px));
+  width: min(300px, calc(100% - 28px));
   max-height: min(52vh, 420px);
   overflow: auto;
   padding: 10px 11px;
@@ -18,19 +18,109 @@
 }
 
 .graph-communities-legend-title {
-  margin-bottom: 7px;
+  margin-bottom: 3px;
   color: var(--text-muted);
   font-weight: var(--font-semibold);
   letter-spacing: 0.02em;
   text-transform: uppercase;
 }
 
-.graph-communities-legend-row {
+.graph-communities-legend-hint {
+  margin-bottom: 7px;
+  padding: 3px 5px;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--text-faint);
+  font-size: 0.88em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-communities-legend.is-focused .graph-communities-legend-hint {
+  border-color: color-mix(in srgb, var(--interactive-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--interactive-accent) 16%, transparent);
+  color: var(--text-normal);
+  font-weight: var(--font-semibold);
+}
+
+.graph-communities-legend-row,
+.graph-communities-parent-row {
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
-  padding: 3px 0;
+  margin: 1px -5px;
+  padding: 4px 5px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease,
+    box-shadow 120ms ease, opacity 120ms ease, transform 120ms ease;
+}
+
+.graph-communities-legend.is-focused .graph-communities-legend-row:not(.is-active),
+.graph-communities-legend.is-focused .graph-communities-parent-row:not(.is-active) {
+  opacity: 0.58;
+}
+
+.graph-communities-legend-row:hover,
+.graph-communities-parent-row:hover {
+  background: var(--background-modifier-hover);
+}
+
+.graph-communities-legend-row:focus-visible,
+.graph-communities-parent-row:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 1px;
+}
+
+.graph-communities-legend-row.is-active,
+.graph-communities-parent-row.is-active {
+  border-color: color-mix(in srgb, var(--interactive-accent) 86%, white 14%);
+  background: color-mix(in srgb, var(--interactive-accent) 24%, var(--background-primary));
+  box-shadow: inset 5px 0 0 var(--interactive-accent),
+    0 0 0 1px color-mix(in srgb, var(--interactive-accent) 50%, transparent),
+    0 0 14px color-mix(in srgb, var(--interactive-accent) 36%, transparent);
+  color: var(--text-normal);
+  font-weight: var(--font-semibold);
+  transform: translateX(3px);
+}
+
+.graph-communities-legend.is-category-focus .graph-communities-legend-row.is-active,
+.graph-communities-legend.is-category-focus .graph-communities-parent-row.is-active {
+  background: color-mix(in srgb, var(--interactive-accent) 34%, var(--background-primary));
+  box-shadow: inset 6px 0 0 var(--interactive-accent),
+    0 0 0 2px color-mix(in srgb, var(--interactive-accent) 62%, transparent),
+    0 0 18px color-mix(in srgb, var(--interactive-accent) 48%, transparent);
+}
+
+.graph-communities-legend-row.is-active .graph-communities-swatch,
+.graph-communities-parent-row.is-active .graph-communities-swatch {
+  border-color: rgb(255 255 255 / 72%);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--interactive-accent) 72%, transparent),
+    0 0 16px currentColor;
+  transform: scale(1.28);
+}
+
+.graph-communities-parent-row {
+  margin-top: 7px;
+  background: color-mix(in srgb, var(--background-modifier-hover) 55%, transparent);
+  font-weight: var(--font-semibold);
+}
+
+.graph-communities-legend-row.is-child {
+  width: calc(100% - 13px);
+  margin-left: 8px;
+  padding-left: 10px;
+  border-left-color: color-mix(in srgb, currentColor 18%, transparent);
+}
+
+.graph-communities-swatch.is-parent {
+  width: 13px;
+  height: 13px;
+  flex-basis: 13px;
+  border-radius: 4px;
 }
 
 .graph-communities-swatch {
@@ -43,7 +133,22 @@
 }
 
 .graph-communities-label {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.graph-communities-selection-marker {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--interactive-accent);
+  border: 1px solid color-mix(in srgb, white 68%, var(--interactive-accent));
+  box-shadow: 0 0 9px color-mix(in srgb, var(--interactive-accent) 70%, transparent);
+  color: var(--text-on-accent);
+  font-size: 0.68em;
+  font-weight: var(--font-bold);
+  letter-spacing: 0.04em;
 }

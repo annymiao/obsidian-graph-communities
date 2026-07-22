@@ -14,14 +14,35 @@ test('bundled plugin loads, clusters, paints, and restores a mocked graph view',
     'B1.md': { 'B2.md': 3 },
     'A0.md': { 'A1.md': 3, 'A2.md': 3, 'B0.md': 0.1 },
   };
-  const ids = ['A0.md', 'A1.md', 'A2.md', 'B0.md', 'B1.md', 'B2.md'];
-  const nodes = ids.map((id) => ({ id }));
+  const ids = [
+    'A0.md',
+    'A1.md',
+    'A2.md',
+    'B0.md',
+    'B1.md',
+    'B2.md',
+  ];
+  const graphNodePrototype = {
+    getDisplayText() {
+      return this.id.split('/').pop().replace(/\.md$/i, '');
+    },
+  };
+  const nodes = ids.map((id) => {
+    const node = Object.create(graphNodePrototype);
+    node.id = id;
+    node.type = '';
+    node.text = { text: node.getDisplayText() };
+    return node;
+  });
   const graphLinks = [
     { source: nodes[0], target: nodes[1], line: {} },
     { source: nodes[0], target: nodes[3], line: {} },
     { source: nodes[3], target: nodes[4], line: {} },
   ];
   let changedCount = 0;
+  let originalNodeClickCount = 0;
+  let originalNodeHoverCount = 0;
+  let originalNodeUnhoverCount = 0;
   const renderer = {
     nodes,
     links: graphLinks,
@@ -30,14 +51,25 @@ test('bundled plugin loads, clusters, paints, and restores a mocked graph view',
       line: { a: 0.8, rgb: 0x777777 },
     },
     changed() { changedCount += 1; },
+    onNodeClick() { originalNodeClickCount += 1; },
+    onNodeHover() { originalNodeHoverCount += 1; },
+    onNodeUnhover() { originalNodeUnhoverCount += 1; },
   };
   const legendChildren = [];
+  let legendElement = null;
   const containerEl = {
-    querySelector() { return null; },
-    appendChild(child) { legendChildren.push(child); },
+    querySelector(selector) {
+      return selector === '.graph-communities-legend' ? legendElement : null;
+    },
+    appendChild(child) {
+      legendChildren.push(child);
+      if (child.className === 'graph-communities-legend') legendElement = child;
+    },
   };
   const leaf = { view: { renderer, containerEl } };
   const listeners = [];
+  const workspaceListeners = new Map();
+  let cachedReadCount = 0;
   const status = { text: '', setText(value) { this.text = value; } };
   const app = {
     metadataCache: {
@@ -45,12 +77,21 @@ test('bundled plugin loads, clusters, paints, and restores a mocked graph view',
       on(_event, callback) { listeners.push(callback); return callback; },
     },
     vault: {
-      getMarkdownFiles() { return ids.map((filePath) => ({ path: filePath })); },
+      getMarkdownFiles() {
+        return ids.map((filePath) => ({ path: filePath, stat: { mtime: 1, size: 10 } }));
+      },
+      async cachedRead() { cachedReadCount += 1; return ''; },
       on(_event, callback) { listeners.push(callback); return callback; },
     },
     workspace: {
       getLeavesOfType(type) { return type === 'graph' ? [leaf] : []; },
-      on(_event, callback) { listeners.push(callback); return callback; },
+      getActiveFile() { return null; },
+      on(event, callback) {
+        listeners.push(callback);
+        if (!workspaceListeners.has(event)) workspaceListeners.set(event, []);
+        workspaceListeners.get(event).push(callback);
+        return callback;
+      },
       onLayoutReady(callback) { callback(); },
     },
   };
@@ -79,16 +120,23 @@ test('bundled plugin loads, clusters, paints, and restores a mocked graph view',
   };
   const fakeDocument = {
     createElement(tagName) {
+      const eventListeners = new Map();
       return {
         tagName,
         className: '',
         style: {},
         textContent: '',
         children: [],
+        attributes: {},
+        eventListeners,
         append(...children) { this.children.push(...children); },
         appendChild(child) { this.children.push(child); },
         replaceChildren(...children) { this.children = [...children]; },
-        remove() {},
+        setAttribute(name, value) { this.attributes[name] = value; },
+        addEventListener(event, callback) { eventListeners.set(event, callback); },
+        remove() {
+          if (this === legendElement) legendElement = null;
+        },
       };
     },
   };
@@ -108,14 +156,150 @@ test('bundled plugin loads, clusters, paints, and restores a mocked graph view',
   const PluginClass = moduleObject.exports;
   const plugin = new PluginClass(app);
   await plugin.onload();
+  await new Promise((resolve) => setTimeout(resolve, 0));
 
   assert.match(status.text, /2 clusters/);
   assert.ok(changedCount > 0);
   assert.ok(nodes.every((node) => node.color && Number.isInteger(node.color.rgb)));
   assert.notEqual(nodes[0].color.rgb, nodes[3].color.rgb);
   assert.equal(legendChildren.length, 1);
+  assert.equal(cachedReadCount, ids.length);
+  await plugin.recompute();
+  assert.equal(cachedReadCount, ids.length);
+  const baselineBLinkTint = graphLinks[2].line.tint;
+  const aCommunity = plugin.analysis.assignments.get('A1.md');
+  const bCommunity = plugin.analysis.assignments.get('B1.md');
+  assert.notEqual(aCommunity, bCommunity);
+  const originalNodeClick = renderer.onNodeClick;
+  const originalNodeHover = renderer.onNodeHover;
+  const originalNodeUnhover = renderer.onNodeUnhover;
+  plugin.paintAll();
+  assert.equal(renderer.onNodeClick, originalNodeClick);
+  renderer.onNodeHover({}, 'A1.md', '');
+  assert.equal(originalNodeHoverCount, 1);
+  assert.equal(plugin.hoveredCommunity, aCommunity);
+  assert.equal(plugin.focusedCommunity, null);
+  assert.ok(nodes.every((node) => node.color.a === 1));
+  let rows = legendElement.children.filter((child) =>
+    child.className.startsWith('graph-communities-legend-row')
+  );
+  assert.equal(rows.filter((row) => row.className.includes('is-active')).length, 1);
+  assert.equal(rows.find((row) => row.className.includes('is-active')).children[2].textContent, 'NODE');
+  renderer.onNodeUnhover();
+  assert.equal(originalNodeUnhoverCount, 1);
+  assert.equal(plugin.hoveredCommunity, null);
+
+  renderer.onNodeClick({}, 'A1.md', '');
+  assert.equal(originalNodeClickCount, 1);
+  assert.equal(plugin.focusedCommunity, aCommunity);
+  assert.equal(plugin.focusedNodeId, 'A1.md');
+  assert.equal(nodes.find((node) => node.id === 'A1.md').color.a, 1);
+  assert.equal(nodes.find((node) => node.id === 'B1.md').color.a, 0.55);
+  assert.notEqual(
+    nodes.find((node) => node.id === 'A1.md').color.rgb,
+    plugin.analysis.colors.get('A1.md')
+  );
+  assert.equal(
+    nodes.find((node) => node.id === 'B1.md').color.rgb,
+    plugin.analysis.colors.get('B1.md')
+  );
+  assert.equal(graphLinks[0].line.alpha, 0.95);
+  assert.equal(graphLinks[2].line.alpha, 0.189);
+  assert.ok(Math.abs(graphLinks[1].line.alpha - 0.072) < 1e-9);
+  rows = legendElement.children.filter((child) =>
+    child.className.startsWith('graph-communities-legend-row')
+  );
+  assert.equal(rows.filter((row) => row.className.includes('is-active')).length, 1);
+  assert.ok(legendElement.className.includes('is-focused'));
+
+  const bClusterIndex = plugin.analysis.clusters.findIndex(
+    (cluster) => cluster.id === bCommunity
+  );
+  rows[bClusterIndex].eventListeners.get('click')({ stopPropagation() {} });
+  assert.equal(plugin.focusSource, 'community');
+  assert.equal(plugin.focusedCommunity, bCommunity);
+  assert.equal(nodes.find((node) => node.id === 'A1.md').color.a, 0.14);
+  assert.equal(nodes.find((node) => node.id === 'B1.md').color.a, 1);
+  assert.equal(
+    nodes.find((node) => node.id === 'B1.md').color.rgb,
+    plugin.analysis.colors.get('B1.md')
+  );
+  assert.equal(graphLinks[0].line.alpha, 0.01);
+  assert.equal(graphLinks[2].line.alpha, 0.98);
+  assert.equal(graphLinks[2].line.tint, baselineBLinkTint);
+  assert.equal(graphLinks[1].line.alpha, 0.1);
+  assert.ok(legendElement.className.includes('is-category-focus'));
+
+  rows = legendElement.children.filter((child) =>
+    child.className.startsWith('graph-communities-legend-row')
+  );
+  rows[bClusterIndex].eventListeners.get('click')({ stopPropagation() {} });
+  assert.equal(plugin.focusedCommunity, null);
+  assert.ok(nodes.every((node) => node.color.a === 1));
+  assert.ok(!legendElement.className.includes('is-focused'));
+  assert.ok(!legendElement.className.includes('is-category-focus'));
+  assert.equal(graphLinks[0].line.alpha, 0.42);
+  assert.equal(graphLinks[1].line.alpha, 0.16);
+
+  const aCluster = plugin.analysis.clusters.find((cluster) => cluster.id === aCommunity);
+  const projectParent = {
+    key: '@parent:test-project',
+    label: 'Test project',
+    colorHex: '#DC2626',
+    size: aCluster.size,
+    visibleSize: aCluster.visibleSize,
+    communityIds: [aCommunity],
+  };
+  aCluster.parentKey = projectParent.key;
+  aCluster.parentLabel = projectParent.label;
+  plugin.analysis.parents = [projectParent];
+  plugin.toggleParentFocus(projectParent);
+  assert.equal(plugin.focusSource, 'parent');
+  assert.equal(plugin.focusedParentKey, projectParent.key);
+  assert.equal(nodes.find((node) => node.id === 'A1.md').color.a, 1);
+  assert.equal(
+    nodes.find((node) => node.id === 'A1.md').color.rgb,
+    plugin.analysis.colors.get('A1.md')
+  );
+  assert.equal(nodes.find((node) => node.id === 'B1.md').color.a, 0.14);
+  assert.equal(graphLinks[0].line.alpha, 0.98);
+  assert.equal(graphLinks[2].line.alpha, 0.01);
+  const parentRow = legendElement.children.find(
+    (child) => child.className.includes('graph-communities-parent-row')
+  );
+  assert.ok(parentRow.className.includes('is-active'));
+  parentRow.eventListeners.get('click')({ stopPropagation() {} });
+  assert.equal(plugin.focusedParentKey, null);
+  assert.ok(nodes.every((node) => node.color.a === 1));
+
+  const duplicateLabelNodes = ['Folder-A/README.md', 'Folder-B/README.md'].map((id) => {
+    const node = Object.create(graphNodePrototype);
+    node.id = id;
+    node.type = '';
+    node.text = { text: node.getDisplayText() };
+    return node;
+  });
+  renderer.nodes.push(...duplicateLabelNodes);
+  plugin.paintAll();
+  assert.equal(duplicateLabelNodes[0].getDisplayText(), 'Folder-A / README');
+  assert.equal(duplicateLabelNodes[0].text.text, 'Folder-A / README');
+  assert.equal(duplicateLabelNodes[1].getDisplayText(), 'Folder-B / README');
+  assert.equal(duplicateLabelNodes[1].text.text, 'Folder-B / README');
 
   plugin.onunload();
+  assert.notEqual(renderer.onNodeClick, originalNodeClick);
+  assert.notEqual(renderer.onNodeHover, originalNodeHover);
+  assert.notEqual(renderer.onNodeUnhover, originalNodeUnhover);
+  renderer.onNodeClick({}, 'B1.md', '');
+  renderer.onNodeHover({}, 'B1.md', '');
+  renderer.onNodeUnhover();
+  assert.equal(originalNodeClickCount, 2);
+  assert.equal(originalNodeHoverCount, 2);
+  assert.equal(originalNodeUnhoverCount, 2);
+  assert.equal(duplicateLabelNodes[0].getDisplayText(), 'README');
+  assert.equal(duplicateLabelNodes[0].text.text, 'README');
+  assert.equal(duplicateLabelNodes[1].getDisplayText(), 'README');
+  assert.equal(duplicateLabelNodes[1].text.text, 'README');
   assert.ok(nodes.every((node) => node.color.rgb === 0x999999));
   assert.ok(graphLinks.every((link) => link.line.tint === 0x777777));
   assert.ok(graphLinks.every((link) => link.line.alpha === 0.8));

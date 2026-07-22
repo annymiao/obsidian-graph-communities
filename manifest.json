@@ -1,9 +1,9 @@
 {
   "id": "graph-communities",
   "name": "Graph Communities",
-  "version": "0.1.0",
+  "version": "0.4.5",
   "minAppVersion": "1.7.0",
-  "description": "Automatically detects note communities and colors tightly connected notes with related colors.",
+  "description": "Extracts multi-label knowledge points from note content and colors related knowledge communities.",
   "author": "annymiao",
   "authorUrl": "https://github.com/annymiao",
   "isDesktopOnly": true
