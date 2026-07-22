@@ -14,8 +14,26 @@ test('bundled plugin loads, clusters, paints, and restores a mocked graph view',
     'B1.md': { 'B2.md': 3 },
     'A0.md': { 'A1.md': 3, 'A2.md': 3, 'B0.md': 0.1 },
   };
-  const ids = ['A0.md', 'A1.md', 'A2.md', 'B0.md', 'B1.md', 'B2.md'];
-  const nodes = ids.map((id) => ({ id }));
+  const ids = [
+    'A0.md',
+    'A1.md',
+    'A2.md',
+    'B0.md',
+    'B1.md',
+    'B2.md',
+  ];
+  const graphNodePrototype = {
+    getDisplayText() {
+      return this.id.split('/').pop().replace(/\.md$/i, '');
+    },
+  };
+  const nodes = ids.map((id) => {
+    const node = Object.create(graphNodePrototype);
+    node.id = id;
+    node.type = '';
+    node.text = { text: node.getDisplayText() };
+    return node;
+  });
   const graphLinks = [
     { source: nodes[0], target: nodes[1], line: {} },
     { source: nodes[0], target: nodes[3], line: {} },
@@ -148,7 +166,7 @@ test('bundled plugin loads, clusters, paints, and restores a mocked graph view',
   assert.equal(cachedReadCount, ids.length);
   await plugin.recompute();
   assert.equal(cachedReadCount, ids.length);
-
+  const baselineBLinkTint = graphLinks[2].line.tint;
   const aCommunity = plugin.analysis.assignments.get('A1.md');
   const bCommunity = plugin.analysis.assignments.get('B1.md');
   assert.notEqual(aCommunity, bCommunity);
@@ -176,14 +194,23 @@ test('bundled plugin loads, clusters, paints, and restores a mocked graph view',
   assert.equal(plugin.focusedCommunity, aCommunity);
   assert.equal(plugin.focusedNodeId, 'A1.md');
   assert.equal(nodes.find((node) => node.id === 'A1.md').color.a, 1);
-  assert.equal(nodes.find((node) => node.id === 'B1.md').color.a, 0.16);
-  assert.equal(graphLinks[0].line.alpha, 0.68);
-  assert.equal(graphLinks[2].line.alpha, 0.025);
-  assert.equal(graphLinks[1].line.alpha, 0.18);
+  assert.equal(nodes.find((node) => node.id === 'B1.md').color.a, 0.55);
+  assert.notEqual(
+    nodes.find((node) => node.id === 'A1.md').color.rgb,
+    plugin.analysis.colors.get('A1.md')
+  );
+  assert.equal(
+    nodes.find((node) => node.id === 'B1.md').color.rgb,
+    plugin.analysis.colors.get('B1.md')
+  );
+  assert.equal(graphLinks[0].line.alpha, 0.95);
+  assert.equal(graphLinks[2].line.alpha, 0.189);
+  assert.ok(Math.abs(graphLinks[1].line.alpha - 0.072) < 1e-9);
   rows = legendElement.children.filter((child) =>
     child.className.startsWith('graph-communities-legend-row')
   );
   assert.equal(rows.filter((row) => row.className.includes('is-active')).length, 1);
+  assert.ok(legendElement.className.includes('is-focused'));
 
   const bClusterIndex = plugin.analysis.clusters.findIndex(
     (cluster) => cluster.id === bCommunity
@@ -191,11 +218,17 @@ test('bundled plugin loads, clusters, paints, and restores a mocked graph view',
   rows[bClusterIndex].eventListeners.get('click')({ stopPropagation() {} });
   assert.equal(plugin.focusSource, 'community');
   assert.equal(plugin.focusedCommunity, bCommunity);
-  assert.equal(nodes.find((node) => node.id === 'A1.md').color.a, 0.16);
+  assert.equal(nodes.find((node) => node.id === 'A1.md').color.a, 0.14);
   assert.equal(nodes.find((node) => node.id === 'B1.md').color.a, 1);
-  assert.equal(graphLinks[0].line.alpha, 0.025);
-  assert.equal(graphLinks[2].line.alpha, 0.68);
-  assert.equal(graphLinks[1].line.alpha, 0.18);
+  assert.equal(
+    nodes.find((node) => node.id === 'B1.md').color.rgb,
+    plugin.analysis.colors.get('B1.md')
+  );
+  assert.equal(graphLinks[0].line.alpha, 0.01);
+  assert.equal(graphLinks[2].line.alpha, 0.98);
+  assert.equal(graphLinks[2].line.tint, baselineBLinkTint);
+  assert.equal(graphLinks[1].line.alpha, 0.1);
+  assert.ok(legendElement.className.includes('is-category-focus'));
 
   rows = legendElement.children.filter((child) =>
     child.className.startsWith('graph-communities-legend-row')
@@ -203,8 +236,55 @@ test('bundled plugin loads, clusters, paints, and restores a mocked graph view',
   rows[bClusterIndex].eventListeners.get('click')({ stopPropagation() {} });
   assert.equal(plugin.focusedCommunity, null);
   assert.ok(nodes.every((node) => node.color.a === 1));
+  assert.ok(!legendElement.className.includes('is-focused'));
+  assert.ok(!legendElement.className.includes('is-category-focus'));
   assert.equal(graphLinks[0].line.alpha, 0.42);
   assert.equal(graphLinks[1].line.alpha, 0.16);
+
+  const aCluster = plugin.analysis.clusters.find((cluster) => cluster.id === aCommunity);
+  const projectParent = {
+    key: '@parent:test-project',
+    label: 'Test project',
+    colorHex: '#DC2626',
+    size: aCluster.size,
+    visibleSize: aCluster.visibleSize,
+    communityIds: [aCommunity],
+  };
+  aCluster.parentKey = projectParent.key;
+  aCluster.parentLabel = projectParent.label;
+  plugin.analysis.parents = [projectParent];
+  plugin.toggleParentFocus(projectParent);
+  assert.equal(plugin.focusSource, 'parent');
+  assert.equal(plugin.focusedParentKey, projectParent.key);
+  assert.equal(nodes.find((node) => node.id === 'A1.md').color.a, 1);
+  assert.equal(
+    nodes.find((node) => node.id === 'A1.md').color.rgb,
+    plugin.analysis.colors.get('A1.md')
+  );
+  assert.equal(nodes.find((node) => node.id === 'B1.md').color.a, 0.14);
+  assert.equal(graphLinks[0].line.alpha, 0.98);
+  assert.equal(graphLinks[2].line.alpha, 0.01);
+  const parentRow = legendElement.children.find(
+    (child) => child.className.includes('graph-communities-parent-row')
+  );
+  assert.ok(parentRow.className.includes('is-active'));
+  parentRow.eventListeners.get('click')({ stopPropagation() {} });
+  assert.equal(plugin.focusedParentKey, null);
+  assert.ok(nodes.every((node) => node.color.a === 1));
+
+  const duplicateLabelNodes = ['Folder-A/README.md', 'Folder-B/README.md'].map((id) => {
+    const node = Object.create(graphNodePrototype);
+    node.id = id;
+    node.type = '';
+    node.text = { text: node.getDisplayText() };
+    return node;
+  });
+  renderer.nodes.push(...duplicateLabelNodes);
+  plugin.paintAll();
+  assert.equal(duplicateLabelNodes[0].getDisplayText(), 'Folder-A / README');
+  assert.equal(duplicateLabelNodes[0].text.text, 'Folder-A / README');
+  assert.equal(duplicateLabelNodes[1].getDisplayText(), 'Folder-B / README');
+  assert.equal(duplicateLabelNodes[1].text.text, 'Folder-B / README');
 
   plugin.onunload();
   assert.notEqual(renderer.onNodeClick, originalNodeClick);
@@ -216,6 +296,10 @@ test('bundled plugin loads, clusters, paints, and restores a mocked graph view',
   assert.equal(originalNodeClickCount, 2);
   assert.equal(originalNodeHoverCount, 2);
   assert.equal(originalNodeUnhoverCount, 2);
+  assert.equal(duplicateLabelNodes[0].getDisplayText(), 'README');
+  assert.equal(duplicateLabelNodes[0].text.text, 'README');
+  assert.equal(duplicateLabelNodes[1].getDisplayText(), 'README');
+  assert.equal(duplicateLabelNodes[1].text.text, 'README');
   assert.ok(nodes.every((node) => node.color.rgb === 0x999999));
   assert.ok(graphLinks.every((link) => link.line.tint === 0x777777));
   assert.ok(graphLinks.every((link) => link.line.alpha === 0.8));

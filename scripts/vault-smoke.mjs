@@ -62,15 +62,14 @@ const model = core.buildHybridGraph(linkGraph, documents, {
   projectMaxSize: 1200,
 });
 const analysis = core.analyzeGraph(model.graph, {
-  maxCommunities: 12,
-  minCommunitySize: 3,
+  maxCommunities: 24,
+  minCommunitySize: 2,
   resolution: 1,
   propagationSteps: 4,
   propagationStrength: 0.52,
   documents: model.documents,
   priorityKeywords: model.priorityKeywords,
 });
-
 console.log(JSON.stringify({
   noteCount: files.length,
   resolvedLinkCount,
@@ -81,9 +80,16 @@ console.log(JSON.stringify({
   navigationRepresentativeCount: analysis.clusters.filter((cluster) =>
     core.isNavigationDocument(cluster.hub, model.documents.get(cluster.hub))
   ).length,
+  dimmedRepresentativeCount: analysis.clusters.filter((cluster) =>
+    (model.documents.get(cluster.hub)?.displayWeight ?? 1) < 0.2
+  ).length,
+  parents: analysis.parents,
   clusters: analysis.clusters.map((cluster) => ({
     label: cluster.label,
+    colorHex: cluster.colorHex,
+    parentLabel: cluster.parentLabel,
     size: cluster.size,
+    visibleSize: cluster.visibleSize,
     representative: cluster.hub,
     representativeGroup: model.documents.get(cluster.hub)?.projectLabel,
     keywords: cluster.keywords,
@@ -113,8 +119,8 @@ function extractDocument(source, text) {
   const frontmatterMatch = text.match(/^---\s*\n([\s\S]*?)\n---\s*(?:\n|$)/u);
   const frontmatter = frontmatterMatch ? frontmatterMatch[1] : '';
   const frontmatterTitle = frontmatter.match(/^title:\s*["']?(.+?)["']?\s*$/imu);
-  const frontmatterTags = frontmatter.match(/^tags?:\s*(.+)$/imu);
-  const frontmatterAliases = frontmatter.match(/^aliases?:\s*(.+)$/imu);
+  const frontmatterTags = readFrontmatterList(frontmatter, 'tags?');
+  const frontmatterAliases = readFrontmatterList(frontmatter, 'aliases?');
   const inlineTags = [...text.matchAll(/(?:^|\s)#([\p{L}\p{N}_/-]{2,})/gmu)]
     .map((match) => match[1]);
   const headings = [...text.matchAll(/^#{1,3}\s+(.+)$/gmu)]
@@ -124,8 +130,8 @@ function extractDocument(source, text) {
     id: source,
     path: source,
     title: frontmatterTitle ? frontmatterTitle[1].trim() : path.basename(source, '.md'),
-    tags: [...splitMetadataList(frontmatterTags && frontmatterTags[1]), ...inlineTags],
-    aliases: splitMetadataList(frontmatterAliases && frontmatterAliases[1]),
+    tags: [...frontmatterTags, ...inlineTags],
+    aliases: frontmatterAliases,
     headings,
     content: text.slice(0, 24000),
   };
@@ -138,6 +144,21 @@ function splitMetadataList(value) {
     .split(/[,，]/u)
     .map((entry) => entry.trim().replace(/^["']|["']$/g, ''))
     .filter(Boolean);
+}
+
+function readFrontmatterList(frontmatter, keyPattern) {
+  const line = frontmatter.match(new RegExp(`^${keyPattern}:[ \\t]*(.*)$`, 'imu'));
+  if (!line) return [];
+  if (line[1].trim()) return splitMetadataList(line[1]);
+  const start = (line.index || 0) + line[0].length;
+  const block = frontmatter.slice(start).split('\n');
+  const values = [];
+  for (const entry of block) {
+    if (/^[^\s#][^:]*:/u.test(entry)) break;
+    const item = entry.match(/^\s*-\s*(.+?)\s*$/u);
+    if (item) values.push(item[1].replace(/^["']|["']$/g, ''));
+  }
+  return values;
 }
 
 async function collectMarkdownFiles(directory) {

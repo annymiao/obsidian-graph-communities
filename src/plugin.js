@@ -12,10 +12,10 @@ const core = require('./graph-core');
 const DEFAULT_SETTINGS = {
   enabled: true,
   resolution: 1,
-  maxCommunities: 12,
-  minCommunitySize: 3,
+  maxCommunities: 24,
+  minCommunitySize: 2,
   topicAware: true,
-  priorityKeywords: 'AI, LLM, ASR, RAG, Agent',
+  priorityKeywords: '儿童发展, 教育学, 心理学, 语言发展, 习惯养成, 运动发展, AI, LLM, ASR, RAG, Agent',
   projectWeight: 5,
   semanticWeight: 1.4,
   linkWeight: 0.65,
@@ -29,6 +29,7 @@ const DEFAULT_SETTINGS = {
   colorEdges: true,
   sameCommunityEdgeOpacity: 0.42,
   crossCommunityEdgeOpacity: 0.16,
+  showParentFolderInLabels: true,
   showLegend: true,
 };
 
@@ -38,12 +39,16 @@ class GraphCommunitiesPlugin extends Plugin {
     this.analysis = null;
     this.focusedCommunity = null;
     this.focusedCommunityLabel = null;
+    this.focusedParentKey = null;
+    this.focusedParentLabel = null;
     this.focusedNodeId = null;
     this.focusSource = null;
     this.hoveredCommunity = null;
     this.hoveredNodeId = null;
     this.rendererHooks = new Map();
+    this.rendererNodeLabelCache = new Map();
     this.documentContentCache = new Map();
+    this.documents = new Map();
     this.recomputeGeneration = 0;
     this.statusBar = this.addStatusBarItem();
     this.statusBar.setText('Graph Communities: waiting');
@@ -187,6 +192,7 @@ class GraphCommunitiesPlugin extends Plugin {
     this.statusBar.setText('Graph Communities: analyzing note content');
     const model = await this.buildGraph();
     if (generation !== this.recomputeGeneration) return;
+    this.documents = model.documents;
     this.analysis = core.analyzeGraph(model.graph, {
       resolution: this.settings.resolution,
       maxCommunities: this.settings.maxCommunities,
@@ -223,17 +229,51 @@ class GraphCommunitiesPlugin extends Plugin {
       );
       if (cluster) {
         this.focusedCommunity = cluster.id;
+        this.focusedParentKey = null;
+        return;
+      }
+    }
+    if (this.focusSource === 'parent' && this.focusedParentLabel) {
+      const parent = this.analysis.parents.find(
+        (candidate) => candidate.label === this.focusedParentLabel
+      );
+      if (parent) {
+        this.focusedParentKey = parent.key;
+        this.focusedCommunity = null;
         return;
       }
     }
     this.clearFocus(false);
   }
 
-  clusterLabel(community) {
-    const cluster = this.analysis && this.analysis.clusters.find(
+  clusterForCommunity(community) {
+    return this.analysis && this.analysis.clusters.find(
       (candidate) => candidate.id === community
     );
+  }
+
+  clusterLabel(community) {
+    const cluster = this.clusterForCommunity(community);
     return cluster ? cluster.label : null;
+  }
+
+  parentKeyForCommunity(community) {
+    return this.clusterForCommunity(community)?.parentKey || null;
+  }
+
+  focusIsActive() {
+    return this.focusedCommunity != null || this.focusedParentKey != null;
+  }
+
+  focusDimsOtherCommunities() {
+    return this.focusSource === 'community' || this.focusSource === 'parent';
+  }
+
+  communityMatchesFocus(community) {
+    if (this.focusedParentKey != null) {
+      return this.parentKeyForCommunity(community) === this.focusedParentKey;
+    }
+    return this.focusedCommunity != null && community === this.focusedCommunity;
   }
 
   focusFromFile(file) {
@@ -245,6 +285,8 @@ class GraphCommunitiesPlugin extends Plugin {
     }
     this.focusedCommunity = community;
     this.focusedCommunityLabel = this.clusterLabel(community);
+    this.focusedParentKey = null;
+    this.focusedParentLabel = null;
     this.focusedNodeId = file.path;
     this.focusSource = 'node';
     this.updateStatusBar();
@@ -277,6 +319,13 @@ class GraphCommunitiesPlugin extends Plugin {
     return this.hoveredCommunity != null ? this.hoveredCommunity : this.focusedCommunity;
   }
 
+  activeLegendParentKey() {
+    const activeCommunity = this.activeLegendCommunity();
+    return activeCommunity != null
+      ? this.parentKeyForCommunity(activeCommunity)
+      : this.focusedParentKey;
+  }
+
   refreshLegends() {
     for (const leaf of this.graphLeaves()) this.updateLegend(leaf && leaf.view);
   }
@@ -289,8 +338,26 @@ class GraphCommunitiesPlugin extends Plugin {
     }
     this.focusedCommunity = cluster.id;
     this.focusedCommunityLabel = cluster.label;
+    this.focusedParentKey = null;
+    this.focusedParentLabel = null;
     this.focusedNodeId = null;
     this.focusSource = 'community';
+    this.updateStatusBar();
+    this.paintAll(true);
+  }
+
+  toggleParentFocus(parent) {
+    this.clearGraphNodePreview(false);
+    if (this.focusSource === 'parent' && this.focusedParentKey === parent.key) {
+      this.clearFocus();
+      return;
+    }
+    this.focusedCommunity = null;
+    this.focusedCommunityLabel = null;
+    this.focusedParentKey = parent.key;
+    this.focusedParentLabel = parent.label;
+    this.focusedNodeId = null;
+    this.focusSource = 'parent';
     this.updateStatusBar();
     this.paintAll(true);
   }
@@ -299,6 +366,8 @@ class GraphCommunitiesPlugin extends Plugin {
     this.clearGraphNodePreview(false);
     this.focusedCommunity = null;
     this.focusedCommunityLabel = null;
+    this.focusedParentKey = null;
+    this.focusedParentLabel = null;
     this.focusedNodeId = null;
     this.focusSource = null;
     this.updateStatusBar();
@@ -307,6 +376,17 @@ class GraphCommunitiesPlugin extends Plugin {
 
   updateStatusBar() {
     if (!this.statusBar || !this.analysis) return;
+    if (this.focusedParentKey != null && this.hoveredCommunity == null) {
+      const parent = this.analysis.parents.find(
+        (candidate) => candidate.key === this.focusedParentKey
+      );
+      if (parent) {
+        this.statusBar.setText(
+          `Graph Communities: ${parent.label} · ${parent.size} notes focused`
+        );
+        return;
+      }
+    }
     const activeCommunity = this.activeLegendCommunity();
     if (activeCommunity != null) {
       const cluster = this.analysis.clusters.find(
@@ -373,6 +453,82 @@ class GraphCommunitiesPlugin extends Plugin {
     this.rendererHooks.clear();
   }
 
+  applyNodeLabel(renderer, node) {
+    if (!node || typeof node.id !== 'string' || node.type === 'tag') return false;
+    let cache = this.rendererNodeLabelCache.get(renderer);
+    const shouldQualify = this.settings.showParentFolderInLabels;
+    let record = cache && cache.get(node);
+
+    if (!shouldQualify) {
+      if (!record) return false;
+      const changed = this.restoreNodeLabel(node, record);
+      cache.delete(node);
+      if (cache.size === 0) this.rendererNodeLabelCache.delete(renderer);
+      return changed;
+    }
+
+    const label = qualifiedDisplayName(node.id);
+    if (!record) {
+      if (!cache) {
+        cache = new Map();
+        this.rendererNodeLabelCache.set(renderer, cache);
+      }
+      const wrapper = function () {
+        return qualifiedDisplayName(this.id);
+      };
+      record = {
+        hadOwnMethod: Object.prototype.hasOwnProperty.call(node, 'getDisplayText'),
+        originalMethod: node.getDisplayText,
+        wrapper,
+      };
+      cache.set(node, record);
+      node.getDisplayText = wrapper;
+    }
+
+    let changed = false;
+    if (node.getDisplayText !== record.wrapper) {
+      record.hadOwnMethod = Object.prototype.hasOwnProperty.call(node, 'getDisplayText');
+      record.originalMethod = node.getDisplayText;
+      node.getDisplayText = record.wrapper;
+      changed = true;
+    }
+    if (node.text && node.text.text !== label) {
+      node.text.text = label;
+      changed = true;
+    }
+    return changed;
+  }
+
+  restoreNodeLabel(node, record) {
+    let changed = false;
+    if (node.getDisplayText === record.wrapper) {
+      if (record.hadOwnMethod) node.getDisplayText = record.originalMethod;
+      else delete node.getDisplayText;
+      changed = true;
+    }
+    if (node.text) {
+      const originalLabel = typeof node.getDisplayText === 'function'
+        ? node.getDisplayText()
+        : displayName(node.id);
+      if (node.text.text !== originalLabel) {
+        node.text.text = originalLabel;
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  restoreAllNodeLabels() {
+    for (const [renderer, cache] of this.rendererNodeLabelCache) {
+      let changed = false;
+      for (const [node, record] of cache) {
+        changed = this.restoreNodeLabel(node, record) || changed;
+      }
+      if (changed && typeof renderer.changed === 'function') renderer.changed();
+    }
+    this.rendererNodeLabelCache.clear();
+  }
+
   paintAll(forceChanged = true) {
     if (!this.settings.enabled || !this.analysis) return;
     for (const leaf of this.graphLeaves()) this.paintLeaf(leaf, forceChanged);
@@ -386,20 +542,44 @@ class GraphCommunitiesPlugin extends Plugin {
     let changed = false;
 
     for (const node of renderer.nodes) {
+      changed = this.applyNodeLabel(renderer, node) || changed;
       const rgb = this.analysis.colors.get(node.id);
       if (rgb == null) continue;
       const community = this.analysis.assignments.get(node.id);
-      const isFocusedCommunity =
-        this.focusedCommunity != null && community === this.focusedCommunity;
+      const isFocusedCommunity = this.communityMatchesFocus(community);
+      const visibility = Math.max(
+        0.01,
+        Math.min(1, this.documents.get(node.id)?.displayWeight ?? 1)
+      );
       let displayRgb = rgb;
-      let alpha = 1;
-      if (this.focusedCommunity != null) {
+      let alpha = visibility;
+      if (this.focusIsActive()) {
         if (isFocusedCommunity) {
-          displayRgb = core.mixRgb(rgb, 0xffffff, node.id === this.focusedNodeId ? 0.34 : 0.1);
-        } else {
+          const categoryFocus = this.focusSource === 'community' || this.focusSource === 'parent';
+          if (categoryFocus) {
+            // Legend selection should reveal the category's semantic color,
+            // not wash it toward white. Full opacity creates the highlight
+            // while leaving Obsidian's node size and graph layout untouched.
+            displayRgb = rgb;
+            alpha = 1;
+          } else {
+            displayRgb = core.mixRgb(
+              rgb,
+              0xffffff,
+              node.id === this.focusedNodeId ? 0.68 : 0.22
+            );
+            alpha = node.id === this.focusedNodeId
+              ? 1
+              : Math.max(visibility, visibility >= 0.5 ? 0.96 : 0.58);
+          }
+        } else if (this.focusDimsOtherCommunities()) {
           const neutral = core.hexToRgbInt(this.settings.neutralColor);
           displayRgb = core.mixRgb(rgb, neutral, 0.72);
-          alpha = 0.16;
+          alpha = Math.max(0.07, visibility * 0.14);
+        } else if (this.focusSource === 'node') {
+          // Keep unrelated hues intact on node selection, but lower their
+          // opacity enough for the selected node and its category to stand out.
+          alpha = Math.max(0.24, visibility * 0.55);
         }
       }
       if (!node.color || node.color.rgb !== displayRgb || node.color.a !== alpha) {
@@ -440,23 +620,50 @@ class GraphCommunitiesPlugin extends Plugin {
         let alpha = sameCommunity
           ? this.settings.sameCommunityEdgeOpacity
           : this.settings.crossCommunityEdgeOpacity;
+        const sourceVisibility = Math.max(
+          0.01,
+          Math.min(1, this.documents.get(sourceId)?.displayWeight ?? 1)
+        );
+        const targetVisibility = Math.max(
+          0.01,
+          Math.min(1, this.documents.get(targetId)?.displayWeight ?? 1)
+        );
         let displayTint = tint;
-        if (this.focusedCommunity != null) {
-          const sourceFocused = sourceCommunity === this.focusedCommunity;
-          const targetFocused = targetCommunity === this.focusedCommunity;
-          if (sourceFocused && targetFocused) {
-            alpha = Math.max(alpha, 0.68);
-            displayTint = core.mixRgb(tint, 0xffffff, 0.08);
+        let keepFocusedLinkVisible = false;
+        if (this.focusIsActive()) {
+          const sourceFocused = this.communityMatchesFocus(sourceCommunity);
+          const targetFocused = this.communityMatchesFocus(targetCommunity);
+          const touchesSelectedNode = this.focusedNodeId != null &&
+            (sourceId === this.focusedNodeId || targetId === this.focusedNodeId);
+          if (touchesSelectedNode) {
+            alpha = Math.max(alpha, 0.95);
+            displayTint = core.mixRgb(tint, 0xffffff, 0.38);
+          } else if (sourceFocused && targetFocused) {
+            const categoryFocus = this.focusSource === 'community' ||
+              this.focusSource === 'parent';
+            if (categoryFocus) {
+              alpha = 0.98;
+              displayTint = tint;
+              keepFocusedLinkVisible = true;
+            } else {
+              alpha = Math.max(alpha, 0.82);
+              displayTint = core.mixRgb(tint, 0xffffff, 0.18);
+            }
+          } else if (!this.focusDimsOtherCommunities()) {
+            alpha *= 0.45;
           } else if (sourceFocused || targetFocused) {
-            alpha = 0.18;
+            alpha = 0.1;
           } else {
-            alpha = 0.025;
+            alpha = 0.01;
             displayTint = core.mixRgb(
               tint,
               core.hexToRgbInt(this.settings.neutralColor),
-              0.75
+              0.68
             );
           }
+        }
+        if (!keepFocusedLinkVisible) {
+          alpha *= Math.max(0.06, Math.sqrt(sourceVisibility * targetVisibility));
         }
         if (link.line.tint !== displayTint) {
           link.line.tint = displayTint;
@@ -489,53 +696,49 @@ class GraphCommunitiesPlugin extends Plugin {
       legend.className = 'graph-communities-legend';
       container.appendChild(legend);
     }
+    legend.className = `graph-communities-legend${
+      this.focusIsActive() ? ' is-focused' : ''
+    }${this.focusSource === 'community' || this.focusSource === 'parent'
+      ? ' is-category-focus'
+      : ''
+    }${this.hoveredCommunity != null ? ' is-previewing' : ''}`;
     legend.replaceChildren();
     const title = document.createElement('div');
     title.className = 'graph-communities-legend-title';
-    title.textContent = 'Topic communities';
+    title.textContent = 'Knowledge communities';
     legend.appendChild(title);
     const hint = document.createElement('div');
     hint.className = 'graph-communities-legend-hint';
     const activeCommunity = this.activeLegendCommunity();
-    const activeLabel = this.clusterLabel(activeCommunity);
+    const activeCluster = this.clusterForCommunity(activeCommunity);
+    const activeLabel = activeCluster?.label || null;
+    const activeParentKey = this.activeLegendParentKey();
+    const activeParent = this.analysis.parents.find(
+      (candidate) => candidate.key === activeParentKey
+    );
+    const categoryPath = [activeParent?.label, activeLabel].filter(Boolean).join(' › ');
+    const activeNodeId = this.hoveredNodeId || this.focusedNodeId;
+    const knowledgeLabels = (this.documents.get(activeNodeId)?.knowledgePoints || [])
+      .slice(0, 5)
+      .map((point) => point.label)
+      .join(' · ');
+    const knowledgeSuffix = knowledgeLabels ? ` · Knowledge: ${knowledgeLabels}` : '';
     if (this.hoveredNodeId) {
-      hint.textContent = `Node: ${displayName(this.hoveredNodeId)} · Category: ${activeLabel}`;
+      hint.textContent = `Node: ${qualifiedDisplayName(this.hoveredNodeId)} · Category: ${categoryPath}${knowledgeSuffix}`;
     } else if (this.focusedNodeId) {
-      hint.textContent = `Selected: ${displayName(this.focusedNodeId)} · Category: ${activeLabel}`;
+      hint.textContent = `Selected: ${qualifiedDisplayName(this.focusedNodeId)} · Category: ${categoryPath}${knowledgeSuffix}`;
+    } else if (this.focusedParentKey && activeParent) {
+      hint.textContent = `Focused project: ${activeParent.label}`;
     } else if (activeLabel) {
-      hint.textContent = `Focused category: ${activeLabel}`;
+      hint.textContent = `Focused category: ${categoryPath}`;
     } else {
-      hint.textContent = 'Click a category to focus · click again to clear';
+      hint.textContent = 'Click a project or subcategory to focus · click again to clear';
     }
     legend.appendChild(hint);
-    for (const cluster of this.analysis.clusters) {
-      const row = document.createElement('div');
-      const isActive = cluster.id === activeCommunity;
-      row.className = `graph-communities-legend-row${isActive ? ' is-active' : ''}`;
+
+    const makeInteractive = (row, activate) => {
       row.setAttribute && row.setAttribute('role', 'button');
-      row.setAttribute && row.setAttribute('aria-pressed', isActive ? 'true' : 'false');
       row.tabIndex = 0;
-      const swatch = document.createElement('span');
-      swatch.className = 'graph-communities-swatch';
-      swatch.style.backgroundColor = cluster.colorHex;
-      const label = document.createElement('span');
-      label.className = 'graph-communities-label';
-      label.textContent = `${cluster.label} (${cluster.size})`;
-      label.title = [
-        `Representative: ${displayName(cluster.hub)}`,
-        cluster.keywords.length ? `Keywords: ${cluster.keywords.join(', ')}` : '',
-      ].filter(Boolean).join(' · ');
-      row.append(swatch, label);
-      if (isActive) {
-        const marker = document.createElement('span');
-        marker.className = 'graph-communities-selection-marker';
-        marker.textContent = this.hoveredCommunity != null ? 'NODE' : 'SELECTED';
-        row.appendChild(marker);
-      }
-      const activate = (event) => {
-        if (event && event.stopPropagation) event.stopPropagation();
-        this.toggleCommunityFocus(cluster);
-      };
       if (typeof row.addEventListener === 'function') {
         row.addEventListener('click', activate);
         row.addEventListener('keydown', (event) => {
@@ -545,11 +748,99 @@ class GraphCommunitiesPlugin extends Plugin {
           }
         });
       }
+    };
+
+    const appendClusterRow = (cluster, child = false) => {
+      const row = document.createElement('div');
+      const parentFocused = this.focusedParentKey != null &&
+        cluster.parentKey === this.focusedParentKey;
+      const isActive = cluster.id === activeCommunity || parentFocused;
+      row.className = `graph-communities-legend-row${child ? ' is-child' : ''}${
+        isActive ? ' is-active' : ''
+      }`;
+      row.setAttribute && row.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+      const swatch = document.createElement('span');
+      swatch.className = 'graph-communities-swatch';
+      swatch.style.backgroundColor = cluster.colorHex;
+      const label = document.createElement('span');
+      label.className = 'graph-communities-label';
+      label.textContent = cluster.visibleSize < cluster.size
+        ? `${cluster.label} (${cluster.visibleSize} shown / ${cluster.size})`
+        : `${cluster.label} (${cluster.size})`;
+      label.title = [
+        `Representative: ${qualifiedDisplayName(cluster.hub)}`,
+        cluster.visibleSize < cluster.size
+          ? `${cluster.size - cluster.visibleSize} duplicate/supporting notes dimmed`
+          : '',
+        cluster.keywords.length ? `Keywords: ${cluster.keywords.join(', ')}` : '',
+      ].filter(Boolean).join(' · ');
+      row.append(swatch, label);
+      if (isActive) {
+        const marker = document.createElement('span');
+        marker.className = 'graph-communities-selection-marker';
+        marker.textContent = this.hoveredCommunity != null
+          ? 'NODE'
+          : parentFocused ? 'GROUP' : 'SELECTED';
+        row.appendChild(marker);
+      }
+      const activate = (event) => {
+        if (event && event.stopPropagation) event.stopPropagation();
+        this.toggleCommunityFocus(cluster);
+      };
+      makeInteractive(row, activate);
       legend.appendChild(row);
+    };
+
+    const appendParentRow = (parent) => {
+      const row = document.createElement('div');
+      const isActive = parent.key === activeParentKey;
+      row.className = `graph-communities-parent-row${isActive ? ' is-active' : ''}`;
+      row.setAttribute && row.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+      const swatch = document.createElement('span');
+      swatch.className = 'graph-communities-swatch is-parent';
+      swatch.style.backgroundColor = parent.colorHex;
+      const label = document.createElement('span');
+      label.className = 'graph-communities-label';
+      label.textContent = parent.visibleSize < parent.size
+        ? `${parent.label} (${parent.visibleSize} shown / ${parent.size})`
+        : `${parent.label} (${parent.size})`;
+      row.append(swatch, label);
+      if (isActive) {
+        const marker = document.createElement('span');
+        marker.className = 'graph-communities-selection-marker';
+        marker.textContent = this.focusSource === 'parent' ? 'SELECTED' : 'PROJECT';
+        row.appendChild(marker);
+      }
+      const activate = (event) => {
+        if (event && event.stopPropagation) event.stopPropagation();
+        this.toggleParentFocus(parent);
+      };
+      makeInteractive(row, activate);
+      legend.appendChild(row);
+    };
+
+    const renderedParents = new Set();
+    for (const cluster of this.analysis.clusters) {
+      if (!cluster.parentKey) {
+        appendClusterRow(cluster);
+        continue;
+      }
+      if (renderedParents.has(cluster.parentKey)) continue;
+      renderedParents.add(cluster.parentKey);
+      const parent = this.analysis.parents.find(
+        (candidate) => candidate.key === cluster.parentKey
+      );
+      if (parent) appendParentRow(parent);
+      for (const childCluster of this.analysis.clusters.filter(
+        (candidate) => candidate.parentKey === cluster.parentKey
+      )) {
+        appendClusterRow(childCluster, true);
+      }
     }
   }
 
   restoreAll() {
+    this.restoreAllNodeLabels();
     for (const leaf of this.graphLeaves()) {
       const view = leaf && leaf.view;
       const renderer = view && view.renderer;
@@ -588,6 +879,14 @@ function displayName(path) {
   return basename.replace(/\.md$/i, '');
 }
 
+function qualifiedDisplayName(path) {
+  const value = String(path || 'Unknown').replace(/\\/gu, '/');
+  const parts = value.split('/').filter(Boolean);
+  const filename = displayName(value);
+  if (parts.length < 2) return filename;
+  return `${parts[parts.length - 2]} / ${filename}`;
+}
+
 function toStringArray(value) {
   if (Array.isArray(value)) return value.flatMap(toStringArray).filter(Boolean);
   if (value == null) return [];
@@ -622,10 +921,10 @@ class GraphCommunitiesSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Maximum communities')
-      .setDesc('Limits the number of distinct major colors. Smaller communities merge into their strongest neighbor.')
+      .setDesc('Limits the number of visible primary knowledge points. Smaller concepts merge into their closest knowledge neighborhood.')
       .addSlider((slider) =>
         slider
-          .setLimits(2, 18, 1)
+          .setLimits(2, 36, 1)
           .setValue(this.plugin.settings.maxCommunities)
           .setDynamicTooltip()
           .onChange(async (value) => {
@@ -773,6 +1072,17 @@ class GraphCommunitiesSettingTab extends PluginSettingTab {
           this.plugin.settings.colorEdges = value;
           await this.plugin.saveSettings(false);
           this.plugin.paintAll();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName('Show parent folder in graph labels')
+      .setDesc('Display file nodes as “parent folder / filename” so repeated names such as README remain distinguishable.')
+      .addToggle((toggle) =>
+        toggle.setValue(this.plugin.settings.showParentFolderInLabels).onChange(async (value) => {
+          this.plugin.settings.showParentFolderInLabels = value;
+          await this.plugin.saveSettings(false);
+          this.plugin.paintAll(true);
         })
       );
 

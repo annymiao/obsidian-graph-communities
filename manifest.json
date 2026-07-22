@@ -1,9 +1,9 @@
 {
   "id": "graph-communities",
   "name": "Graph Communities",
-  "version": "0.2.0",
+  "version": "0.4.5",
   "minAppVersion": "1.7.0",
-  "description": "Groups notes by projects, keywords, metadata, and links, then colors related topics with related colors.",
+  "description": "Extracts multi-label knowledge points from note content and colors related knowledge communities.",
   "author": "annymiao",
   "authorUrl": "https://github.com/annymiao",
   "isDesktopOnly": true
