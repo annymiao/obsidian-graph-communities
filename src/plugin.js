@@ -15,7 +15,7 @@ const DEFAULT_SETTINGS = {
   maxCommunities: 24,
   minCommunitySize: 2,
   topicAware: true,
-  priorityKeywords: '儿童发展, 教育学, 心理学, 语言发展, 习惯养成, 运动发展, AI, LLM, ASR, RAG, Agent',
+  priorityKeywords: '',
   projectWeight: 5,
   semanticWeight: 1.4,
   linkWeight: 0.65,
@@ -49,6 +49,14 @@ class GraphCommunitiesPlugin extends Plugin {
     this.rendererNodeLabelCache = new Map();
     this.documentContentCache = new Map();
     this.documents = new Map();
+    this.excludedNodeIds = new Set();
+    this.exclusionReasons = new Map();
+    this.topicManifest = null;
+    this.topicManifestState = 'built-in fallback';
+    this.manifestWarningShown = false;
+    this.gradientTextureCache = new Map();
+    this.gradientLineRecords = new Map();
+    this.rendererNodeVisibilityCache = new Map();
     this.recomputeGeneration = 0;
     this.statusBar = this.addStatusBarItem();
     this.statusBar.setText('Graph Communities: waiting');
@@ -120,10 +128,11 @@ class GraphCommunitiesPlugin extends Plugin {
 
   async buildGraph() {
     const files = this.app.vault.getMarkdownFiles();
-    const linkGraph = core.graphFromResolvedLinks(
-      this.app.metadataCache.resolvedLinks || {},
-      files.map((file) => file.path)
-    );
+    const {
+      topicManifest,
+      topicManifestState,
+      topicManifestWarning,
+    } = await this.readTopicManifest();
     const activePaths = new Set(files.map((file) => file.path));
     for (const cachedPath of this.documentContentCache.keys()) {
       if (!activePaths.has(cachedPath)) this.documentContentCache.delete(cachedPath);
@@ -152,11 +161,26 @@ class GraphCommunitiesPlugin extends Plugin {
           tags,
           headings: (cache.headings || []).map((heading) => heading.heading),
           content: await this.readDocumentContent(file),
+          frontmatter,
+          graphPrimaryTheme: frontmatter.graph_primary_theme,
+          graphPrimaryTopic: frontmatter.graph_primary_topic,
+          graphSecondaryTopics: toStringArray(frontmatter.graph_secondary_topics),
+          graphExclude: frontmatter.graph_exclude,
+          graphExcludeReason: frontmatter.graph_exclude_reason,
         };
       }));
       documents.push(...batch);
     }
-    return core.buildHybridGraph(linkGraph, documents, {
+    const filtered = core.filterEffectiveDocuments(documents);
+    const exclusionReasons = filtered.excluded;
+    const excludedNodeIds = new Set(filtered.excluded.keys());
+    const effectiveIds = filtered.effective.map((document) => document.id);
+    const linkGraph = core.graphFromResolvedLinks(
+      this.app.metadataCache.resolvedLinks || {},
+      effectiveIds,
+      { restrictToNodeIds: true }
+    );
+    const model = core.buildHybridGraph(linkGraph, filtered.effective, {
       priorityKeywords: this.settings.priorityKeywords,
       linkWeight: this.settings.topicAware ? this.settings.linkWeight : 1,
       projectWeight: this.settings.topicAware ? this.settings.projectWeight : 0,
@@ -165,7 +189,63 @@ class GraphCommunitiesPlugin extends Plugin {
         ? this.settings.navigationLinkPenalty
         : 1,
       projectMaxSize: this.settings.projectMaxSize,
+      topicManifest,
     });
+    return {
+      ...model,
+      topicManifest,
+      topicManifestState,
+      topicManifestWarning,
+      exclusionReasons,
+      excludedNodeIds,
+    };
+  }
+
+  async readTopicManifest() {
+    const manifestPath = '.codex/graph/topic-manifest.json';
+    try {
+      const adapter = this.app.vault.adapter;
+      let source = null;
+      if (
+        adapter &&
+        typeof adapter.exists === 'function' &&
+        typeof adapter.read === 'function'
+      ) {
+        if (await adapter.exists(manifestPath)) {
+          source = await adapter.read(manifestPath);
+        }
+      } else {
+        const file = typeof this.app.vault.getAbstractFileByPath === 'function'
+          ? this.app.vault.getAbstractFileByPath(manifestPath)
+          : null;
+        if (file) {
+          source = typeof this.app.vault.cachedRead === 'function'
+            ? await this.app.vault.cachedRead(file)
+            : await this.app.vault.read(file);
+        }
+      }
+      if (source == null) {
+        return {
+          topicManifest: null,
+          topicManifestState: 'built-in fallback',
+          topicManifestWarning: null,
+        };
+      }
+      const manifest = core.normalizeTopicManifest(JSON.parse(source));
+      if (!manifest.valid) throw new Error(manifest.error || 'invalid schema');
+      return {
+        topicManifest: manifest,
+        topicManifestState: 'portable manifest',
+        topicManifestWarning: null,
+      };
+    } catch (error) {
+      return {
+        topicManifest: null,
+        topicManifestState: `manifest invalid · ${error.message || 'parse error'}`,
+        topicManifestWarning:
+          'Graph Communities: topic manifest is invalid; using built-in topics',
+      };
+    }
   }
 
   async readDocumentContent(file) {
@@ -175,7 +255,9 @@ class GraphCommunitiesPlugin extends Plugin {
     if (cached && cached.revision === revision) return cached.content;
     try {
       const source = await this.app.vault.cachedRead(file);
-      const content = String(source || '').slice(0, 24000);
+      // Exclusion, duplicate detection, and semantic classification all use
+      // the complete local file so the plugin and portable curator agree.
+      const content = String(source || '');
       this.documentContentCache.set(file.path, { revision, content });
       return content;
     } catch {
@@ -192,8 +274,7 @@ class GraphCommunitiesPlugin extends Plugin {
     this.statusBar.setText('Graph Communities: analyzing note content');
     const model = await this.buildGraph();
     if (generation !== this.recomputeGeneration) return;
-    this.documents = model.documents;
-    this.analysis = core.analyzeGraph(model.graph, {
+    const analysis = core.analyzeGraph(model.graph, {
       resolution: this.settings.resolution,
       maxCommunities: this.settings.maxCommunities,
       minCommunitySize: this.settings.minCommunitySize,
@@ -205,7 +286,21 @@ class GraphCommunitiesPlugin extends Plugin {
       documents: model.documents,
       priorityKeywords: model.priorityKeywords,
       projectFirst: this.settings.topicAware,
+      topicManifest: model.topicManifest,
     });
+
+    // Publish one generation's derived state together only after it wins the
+    // generation check. A slower, older recompute must remain side-effect free.
+    this.topicManifest = model.topicManifest;
+    this.topicManifestState = model.topicManifestState;
+    this.exclusionReasons = model.exclusionReasons;
+    this.excludedNodeIds = model.excludedNodeIds;
+    this.documents = model.documents;
+    this.analysis = analysis;
+    if (model.topicManifestWarning && !this.manifestWarningShown) {
+      this.manifestWarningShown = true;
+      new Notice(model.topicManifestWarning);
+    }
     this.hoveredCommunity = null;
     this.hoveredNodeId = null;
     this.restoreFocusAfterRecompute();
@@ -216,15 +311,15 @@ class GraphCommunitiesPlugin extends Plugin {
   restoreFocusAfterRecompute() {
     if (!this.analysis) return;
     if (this.focusSource === 'node' && this.focusedNodeId) {
-      const community = this.analysis.assignments.get(this.focusedNodeId);
-      if (community != null && community >= 0) {
+      const community = this.nodeCategory(this.focusedNodeId);
+      if (community != null) {
         this.focusedCommunity = community;
         this.focusedCommunityLabel = this.clusterLabel(community);
         return;
       }
     }
     if (this.focusSource === 'community' && this.focusedCommunityLabel) {
-      const cluster = this.analysis.clusters.find(
+      const cluster = this.legendClusters().find(
         (candidate) => candidate.label === this.focusedCommunityLabel
       );
       if (cluster) {
@@ -234,7 +329,7 @@ class GraphCommunitiesPlugin extends Plugin {
       }
     }
     if (this.focusSource === 'parent' && this.focusedParentLabel) {
-      const parent = this.analysis.parents.find(
+      const parent = this.legendParents().find(
         (candidate) => candidate.label === this.focusedParentLabel
       );
       if (parent) {
@@ -247,9 +342,28 @@ class GraphCommunitiesPlugin extends Plugin {
   }
 
   clusterForCommunity(community) {
-    return this.analysis && this.analysis.clusters.find(
+    return this.analysis && this.legendClusters().find(
       (candidate) => candidate.id === community
     );
+  }
+
+  legendClusters() {
+    return this.analysis?.semanticTopics?.length
+      ? this.analysis.semanticTopics
+      : this.analysis?.clusters || [];
+  }
+
+  legendParents() {
+    return this.analysis?.semanticThemes?.length
+      ? this.analysis.semanticThemes
+      : this.analysis?.parents || [];
+  }
+
+  nodeCategory(id) {
+    if (!this.analysis) return null;
+    return this.analysis.semanticAssignments?.get(id) ??
+      this.analysis.assignments.get(id) ??
+      null;
   }
 
   clusterLabel(community) {
@@ -278,8 +392,8 @@ class GraphCommunitiesPlugin extends Plugin {
 
   focusFromFile(file) {
     if (!this.analysis || !file || !file.path) return;
-    const community = this.analysis.assignments.get(file.path);
-    if (community == null || community < 0) {
+    const community = this.nodeCategory(file.path);
+    if (community == null) {
       if (this.focusSource === 'node') this.clearFocus();
       return;
     }
@@ -295,8 +409,8 @@ class GraphCommunitiesPlugin extends Plugin {
 
   previewFromGraphNode(id) {
     if (!this.analysis || typeof id !== 'string') return;
-    const community = this.analysis.assignments.get(id);
-    if (community == null || community < 0) {
+    const community = this.nodeCategory(id);
+    if (community == null) {
       this.clearGraphNodePreview();
       return;
     }
@@ -377,7 +491,7 @@ class GraphCommunitiesPlugin extends Plugin {
   updateStatusBar() {
     if (!this.statusBar || !this.analysis) return;
     if (this.focusedParentKey != null && this.hoveredCommunity == null) {
-      const parent = this.analysis.parents.find(
+      const parent = this.legendParents().find(
         (candidate) => candidate.key === this.focusedParentKey
       );
       if (parent) {
@@ -389,7 +503,7 @@ class GraphCommunitiesPlugin extends Plugin {
     }
     const activeCommunity = this.activeLegendCommunity();
     if (activeCommunity != null) {
-      const cluster = this.analysis.clusters.find(
+      const cluster = this.legendClusters().find(
         (candidate) => candidate.id === activeCommunity
       );
       if (cluster) {
@@ -402,7 +516,8 @@ class GraphCommunitiesPlugin extends Plugin {
       }
     }
     this.statusBar.setText(
-      `Graph Communities: ${this.analysis.clusters.length} clusters · ${this.analysis.nodeCount} notes`
+      `Graph Communities: ${this.legendParents().length} themes · ` +
+      `${this.analysis.effectiveCount ?? this.analysis.nodeCount} effective notes`
     );
   }
 
@@ -529,6 +644,285 @@ class GraphCommunitiesPlugin extends Plugin {
     this.rendererNodeLabelCache.clear();
   }
 
+  applyNodeVisibility(renderer, node, excluded) {
+    if (!node || node.type === 'tag') return false;
+    let cache = this.rendererNodeVisibilityCache.get(renderer);
+    let record = cache?.get(node);
+    if (!excluded) {
+      if (!record) return false;
+      this.restoreNodeVisibilityRecord(node, record);
+      cache.delete(node);
+      if (!cache.size) this.rendererNodeVisibilityCache.delete(renderer);
+      return true;
+    }
+    if (!record) {
+      if (!cache) {
+        cache = new Map();
+        this.rendererNodeVisibilityCache.set(renderer, cache);
+      }
+      const plugin = this;
+      record = {
+        visuals: new Map(),
+        hadOwnRender: Object.prototype.hasOwnProperty.call(node, 'render'),
+        originalRender: node.render,
+        wrapper: null,
+      };
+      if (typeof node.render === 'function') {
+        record.wrapper = function (...args) {
+          const result = record.originalRender.apply(this, args);
+          plugin.enforceNodeHidden(node, record);
+          return result;
+        };
+        node.render = record.wrapper;
+      }
+      cache.set(node, record);
+    } else if (
+      record.wrapper &&
+      node.render !== record.wrapper &&
+      typeof node.render === 'function'
+    ) {
+      record.hadOwnRender = Object.prototype.hasOwnProperty.call(node, 'render');
+      record.originalRender = node.render;
+      node.render = record.wrapper;
+    }
+    this.enforceNodeHidden(node, record);
+    return true;
+  }
+
+  nodeVisibilityTargets(node) {
+    return [...new Set([
+      node,
+      node.text,
+      node.circle,
+      node.sprite,
+      node.graphics,
+      node.highlight,
+    ].filter(Boolean))];
+  }
+
+  enforceNodeHidden(node, record) {
+    const visualProperties = ['visible', 'alpha', 'renderable'];
+    const interactionProperties = [
+      'eventMode',
+      'interactive',
+      'interactiveChildren',
+      'buttonMode',
+    ];
+    for (const target of this.nodeVisibilityTargets(node)) {
+      if (!record.visuals.has(target)) {
+        const properties = {};
+        for (const property of [...visualProperties, ...interactionProperties]) {
+          if (property in target) properties[property] = target[property];
+        }
+        record.visuals.set(target, properties);
+      }
+      if (target !== node) {
+        if ('visible' in target) target.visible = false;
+        if ('alpha' in target) target.alpha = 0;
+        if ('renderable' in target) target.renderable = false;
+      }
+      if ('eventMode' in target) target.eventMode = 'none';
+      if ('interactive' in target) target.interactive = false;
+      if ('interactiveChildren' in target) target.interactiveChildren = false;
+      if ('buttonMode' in target) target.buttonMode = false;
+    }
+  }
+
+  restoreNodeVisibilityRecord(node, record) {
+    if (record.wrapper && node.render === record.wrapper) {
+      if (record.hadOwnRender) node.render = record.originalRender;
+      else delete node.render;
+    }
+    for (const [target, properties] of record.visuals) {
+      for (const [property, value] of Object.entries(properties)) {
+        target[property] = value;
+      }
+    }
+  }
+
+  restoreAllNodeVisibility() {
+    for (const [renderer, cache] of this.rendererNodeVisibilityCache) {
+      let changed = false;
+      for (const [node, record] of cache) {
+        this.restoreNodeVisibilityRecord(node, record);
+        changed = true;
+      }
+      if (changed && typeof renderer.changed === 'function') renderer.changed();
+    }
+    this.rendererNodeVisibilityCache.clear();
+  }
+
+  gradientTexture(sourceColor, targetColor, ownerDocument, line) {
+    if (sourceColor === targetColor) return null;
+    const textureConstructor = line?.texture?.constructor;
+    if (!textureConstructor || typeof textureConstructor.from !== 'function') return null;
+    const key = `${sourceColor.toString(16)}>${targetColor.toString(16)}`;
+    const cached = this.gradientTextureCache.get(key);
+    if (cached?.textureConstructor === textureConstructor) return cached.texture;
+    try {
+      const canvas = ownerDocument.createElement('canvas');
+      canvas.width = 64;
+      canvas.height = 2;
+      const context = canvas.getContext('2d');
+      if (!context) return null;
+      const gradient = context.createLinearGradient(0, 0, canvas.width, 0);
+      gradient.addColorStop(0, core.rgbIntToHex(sourceColor));
+      gradient.addColorStop(1, core.rgbIntToHex(targetColor));
+      context.fillStyle = gradient;
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      const texture = textureConstructor.from(canvas);
+      if (!texture) return null;
+      this.gradientTextureCache.set(key, { texture, textureConstructor });
+      return texture;
+    } catch {
+      return null;
+    }
+  }
+
+  ensureGradientLineRecord(link) {
+    if (!link?.line) return null;
+    let record = this.gradientLineRecords.get(link);
+    if (record && record.line === link.line) {
+      if (
+        record.wrapper &&
+        link.render !== record.wrapper &&
+        typeof link.render === 'function'
+      ) {
+        record.hadOwnRender = Object.prototype.hasOwnProperty.call(link, 'render');
+        record.originalRender = link.render;
+        link.render = record.wrapper;
+      }
+      return record;
+    }
+    if (record) this.restoreGradientLine(link, record);
+    const plugin = this;
+    record = {
+      link,
+      line: link.line,
+      originalTexture: link.line.texture,
+      originalTint: link.line.tint,
+      originalAlpha: link.line.alpha,
+      hadOwnRender: Object.prototype.hasOwnProperty.call(link, 'render'),
+      originalRender: link.render,
+      wrapper: null,
+      spec: null,
+      hiddenDecorations: new Map(),
+    };
+    if (typeof record.originalRender === 'function') {
+      record.wrapper = function (...args) {
+        const result = record.originalRender.apply(this, args);
+        plugin.applyGradientLineSpec(record);
+        return result;
+      };
+      link.render = record.wrapper;
+    }
+    this.gradientLineRecords.set(link, record);
+    return record;
+  }
+
+  applyGradientLineSpec(record) {
+    const line = record?.line;
+    const spec = record?.spec;
+    if (!line || !spec) return;
+    line.texture = spec.texture ?? record.originalTexture;
+    line.tint = spec.tint;
+    line.alpha = spec.alpha;
+    if (spec.kind === 'hidden') this.enforceHiddenLinkDecorations(record);
+  }
+
+  setGradientLine(link, sourceColor, targetColor, alpha, ownerDocument) {
+    const record = this.ensureGradientLineRecord(link);
+    if (!record) return false;
+    this.restoreHiddenLinkDecorations(record);
+    const texture = this.gradientTexture(sourceColor, targetColor, ownerDocument, record.line);
+    record.spec = texture
+      ? { texture, tint: 0xffffff, alpha, kind: 'gradient' }
+      : {
+        texture: record.originalTexture,
+        tint: sourceColor === targetColor
+          ? sourceColor
+          : core.blendRgbInts([sourceColor, targetColor], [1, 1]),
+        alpha,
+        kind: sourceColor === targetColor ? 'solid' : 'fallback',
+      };
+    this.applyGradientLineSpec(record);
+    return true;
+  }
+
+  enforceHiddenLinkDecorations(record) {
+    const arrow = record.link?.arrow;
+    if (!arrow) return;
+    if (!record.hiddenDecorations.has(arrow)) {
+      const properties = {};
+      for (const property of [
+        'visible',
+        'alpha',
+        'renderable',
+        'eventMode',
+        'interactive',
+        'buttonMode',
+      ]) {
+        if (property in arrow) properties[property] = arrow[property];
+      }
+      record.hiddenDecorations.set(arrow, properties);
+    }
+    if ('visible' in arrow) arrow.visible = false;
+    if ('alpha' in arrow) arrow.alpha = 0;
+    if ('renderable' in arrow) arrow.renderable = false;
+    if ('eventMode' in arrow) arrow.eventMode = 'none';
+    if ('interactive' in arrow) arrow.interactive = false;
+    if ('buttonMode' in arrow) arrow.buttonMode = false;
+  }
+
+  restoreHiddenLinkDecorations(record) {
+    for (const [target, properties] of record.hiddenDecorations || []) {
+      for (const [property, value] of Object.entries(properties)) {
+        target[property] = value;
+      }
+    }
+    record.hiddenDecorations?.clear();
+  }
+
+  hideGradientLine(link) {
+    const record = this.ensureGradientLineRecord(link);
+    if (!record) return false;
+    record.spec = {
+      texture: record.originalTexture,
+      tint: record.originalTint,
+      alpha: 0,
+      kind: 'hidden',
+    };
+    this.applyGradientLineSpec(record);
+    return true;
+  }
+
+  restoreGradientLine(link, record = this.gradientLineRecords.get(link)) {
+    if (!record) return;
+    if (record.wrapper && link.render === record.wrapper) {
+      if (record.hadOwnRender) link.render = record.originalRender;
+      else delete link.render;
+    }
+    this.restoreHiddenLinkDecorations(record);
+    if (record.line) {
+      record.line.texture = record.originalTexture;
+      record.line.tint = record.originalTint;
+      record.line.alpha = record.originalAlpha;
+    }
+    this.gradientLineRecords.delete(link);
+  }
+
+  restoreGradientLines(destroyTextures = false) {
+    for (const [link, record] of [...this.gradientLineRecords.entries()]) {
+      this.restoreGradientLine(link, record);
+    }
+    if (destroyTextures) {
+      for (const { texture } of this.gradientTextureCache.values()) {
+        if (texture && typeof texture.destroy === 'function') texture.destroy(true);
+      }
+      this.gradientTextureCache.clear();
+    }
+  }
+
   paintAll(forceChanged = true) {
     if (!this.settings.enabled || !this.analysis) return;
     for (const leaf of this.graphLeaves()) this.paintLeaf(leaf, forceChanged);
@@ -542,10 +936,20 @@ class GraphCommunitiesPlugin extends Plugin {
     let changed = false;
 
     for (const node of renderer.nodes) {
+      const excluded = typeof node.id === 'string' && this.excludedNodeIds.has(node.id);
+      changed = this.applyNodeVisibility(renderer, node, excluded) || changed;
+      if (excluded) {
+        const neutral = core.hexToRgbInt(this.settings.neutralColor);
+        if (!node.color || node.color.rgb !== neutral || node.color.a !== 0) {
+          node.color = { a: 0, rgb: neutral };
+          changed = true;
+        }
+        continue;
+      }
       changed = this.applyNodeLabel(renderer, node) || changed;
       const rgb = this.analysis.colors.get(node.id);
       if (rgb == null) continue;
-      const community = this.analysis.assignments.get(node.id);
+      const community = this.nodeCategory(node.id);
       const isFocusedCommunity = this.communityMatchesFocus(community);
       const visibility = Math.max(
         0.01,
@@ -591,7 +995,17 @@ class GraphCommunitiesPlugin extends Plugin {
     if (Array.isArray(renderer.links)) {
       const defaultLine = renderer.colors && renderer.colors.line;
       for (const link of renderer.links) {
+        const sourceId = nodeId(link.source);
+        const targetId = nodeId(link.target);
+        if (
+          this.excludedNodeIds.has(sourceId) ||
+          this.excludedNodeIds.has(targetId)
+        ) {
+          changed = this.hideGradientLine(link) || changed;
+          continue;
+        }
         if (!this.settings.colorEdges) {
+          this.restoreGradientLine(link);
           if (!link.line) continue;
           const defaultTint = defaultLine && defaultLine.rgb;
           const defaultAlpha = defaultLine && defaultLine.a != null ? defaultLine.a : 1;
@@ -605,17 +1019,14 @@ class GraphCommunitiesPlugin extends Plugin {
           }
           continue;
         }
-        const sourceId = nodeId(link.source);
-        const targetId = nodeId(link.target);
         const sourceColor = this.analysis.colors.get(sourceId);
         const targetColor = this.analysis.colors.get(targetId);
         if (sourceColor == null || targetColor == null || !link.line) continue;
         const tint = core.blendRgbInts([sourceColor, targetColor], [1, 1]);
-        const sourceCommunity = this.analysis.assignments.get(sourceId);
-        const targetCommunity = this.analysis.assignments.get(targetId);
+        const sourceCommunity = this.nodeCategory(sourceId);
+        const targetCommunity = this.nodeCategory(targetId);
         const sameCommunity =
           sourceCommunity != null &&
-          sourceCommunity >= 0 &&
           sourceCommunity === targetCommunity;
         let alpha = sameCommunity
           ? this.settings.sameCommunityEdgeOpacity
@@ -665,14 +1076,16 @@ class GraphCommunitiesPlugin extends Plugin {
         if (!keepFocusedLinkVisible) {
           alpha *= Math.max(0.06, Math.sqrt(sourceVisibility * targetVisibility));
         }
-        if (link.line.tint !== displayTint) {
-          link.line.tint = displayTint;
-          changed = true;
-        }
-        if (link.line.alpha !== alpha) {
-          link.line.alpha = alpha;
-          changed = true;
-        }
+        const ownerDocument = view.containerEl?.ownerDocument ||
+          this.app.workspace.containerEl?.ownerDocument ||
+          globalThis.document;
+        changed = this.setGradientLine(
+          link,
+          sourceColor,
+          targetColor,
+          alpha,
+          ownerDocument
+        ) || changed;
       }
     }
 
@@ -686,13 +1099,14 @@ class GraphCommunitiesPlugin extends Plugin {
   updateLegend(view) {
     const container = view && view.containerEl;
     if (!container) return;
+    const ownerDocument = container.ownerDocument || globalThis.document;
     let legend = container.querySelector('.graph-communities-legend');
     if (!this.settings.showLegend || !this.settings.enabled || !this.analysis) {
       if (legend) legend.remove();
       return;
     }
     if (!legend) {
-      legend = document.createElement('div');
+      legend = ownerDocument.createElement('div');
       legend.className = 'graph-communities-legend';
       container.appendChild(legend);
     }
@@ -703,22 +1117,29 @@ class GraphCommunitiesPlugin extends Plugin {
       : ''
     }${this.hoveredCommunity != null ? ' is-previewing' : ''}`;
     legend.replaceChildren();
-    const title = document.createElement('div');
+    const title = ownerDocument.createElement('div');
     title.className = 'graph-communities-legend-title';
-    title.textContent = 'Knowledge communities';
+    title.textContent = 'Knowledge themes';
     legend.appendChild(title);
-    const hint = document.createElement('div');
+    const hint = ownerDocument.createElement('div');
     hint.className = 'graph-communities-legend-hint';
     const activeCommunity = this.activeLegendCommunity();
     const activeCluster = this.clusterForCommunity(activeCommunity);
     const activeLabel = activeCluster?.label || null;
     const activeParentKey = this.activeLegendParentKey();
-    const activeParent = this.analysis.parents.find(
+    const activeParent = this.legendParents().find(
       (candidate) => candidate.key === activeParentKey
     );
     const categoryPath = [activeParent?.label, activeLabel].filter(Boolean).join(' › ');
     const activeNodeId = this.hoveredNodeId || this.focusedNodeId;
-    const knowledgeLabels = (this.documents.get(activeNodeId)?.knowledgePoints || [])
+    const activeDocument = this.documents.get(activeNodeId) || {};
+    const knowledgeLabels = [
+      ...(activeDocument.knowledgePoints || []),
+      ...(activeDocument.secondaryKnowledgePoints || []),
+    ]
+      .filter((point, index, list) =>
+        list.findIndex((candidate) => candidate.key === point.key) === index
+      )
       .slice(0, 5)
       .map((point) => point.label)
       .join(' · ');
@@ -732,7 +1153,10 @@ class GraphCommunitiesPlugin extends Plugin {
     } else if (activeLabel) {
       hint.textContent = `Focused category: ${categoryPath}`;
     } else {
-      hint.textContent = 'Click a project or subcategory to focus · click again to clear';
+      hint.textContent =
+        `Source: ${this.topicManifestState} · ` +
+        `${this.analysis.effectiveCount ?? this.analysis.nodeCount} effective · ` +
+        `${this.excludedNodeIds.size} excluded · click a theme or topic to focus`;
     }
     legend.appendChild(hint);
 
@@ -751,7 +1175,7 @@ class GraphCommunitiesPlugin extends Plugin {
     };
 
     const appendClusterRow = (cluster, child = false) => {
-      const row = document.createElement('div');
+      const row = ownerDocument.createElement('div');
       const parentFocused = this.focusedParentKey != null &&
         cluster.parentKey === this.focusedParentKey;
       const isActive = cluster.id === activeCommunity || parentFocused;
@@ -759,14 +1183,16 @@ class GraphCommunitiesPlugin extends Plugin {
         isActive ? ' is-active' : ''
       }`;
       row.setAttribute && row.setAttribute('aria-pressed', isActive ? 'true' : 'false');
-      const swatch = document.createElement('span');
+      row.setAttribute && row.setAttribute('aria-label', `Focus topic ${cluster.label}`);
+      const swatch = ownerDocument.createElement('span');
       swatch.className = 'graph-communities-swatch';
       swatch.style.backgroundColor = cluster.colorHex;
-      const label = document.createElement('span');
+      const label = ownerDocument.createElement('span');
       label.className = 'graph-communities-label';
-      label.textContent = cluster.visibleSize < cluster.size
-        ? `${cluster.label} (${cluster.visibleSize} shown / ${cluster.size})`
-        : `${cluster.label} (${cluster.size})`;
+      const percentage = Number.isFinite(cluster.percentage)
+        ? ` · ${cluster.percentage.toFixed(1)}%`
+        : '';
+      label.textContent = `${cluster.label} (${cluster.size}${percentage})`;
       label.title = [
         `Representative: ${qualifiedDisplayName(cluster.hub)}`,
         cluster.visibleSize < cluster.size
@@ -776,7 +1202,7 @@ class GraphCommunitiesPlugin extends Plugin {
       ].filter(Boolean).join(' · ');
       row.append(swatch, label);
       if (isActive) {
-        const marker = document.createElement('span');
+        const marker = ownerDocument.createElement('span');
         marker.className = 'graph-communities-selection-marker';
         marker.textContent = this.hoveredCommunity != null
           ? 'NODE'
@@ -792,21 +1218,24 @@ class GraphCommunitiesPlugin extends Plugin {
     };
 
     const appendParentRow = (parent) => {
-      const row = document.createElement('div');
+      const row = ownerDocument.createElement('div');
       const isActive = parent.key === activeParentKey;
       row.className = `graph-communities-parent-row${isActive ? ' is-active' : ''}`;
       row.setAttribute && row.setAttribute('aria-pressed', isActive ? 'true' : 'false');
-      const swatch = document.createElement('span');
+      row.setAttribute && row.setAttribute('aria-label', `Focus theme ${parent.label}`);
+      const swatch = ownerDocument.createElement('span');
       swatch.className = 'graph-communities-swatch is-parent';
       swatch.style.backgroundColor = parent.colorHex;
-      const label = document.createElement('span');
+      const label = ownerDocument.createElement('span');
       label.className = 'graph-communities-label';
-      label.textContent = parent.visibleSize < parent.size
-        ? `${parent.label} (${parent.visibleSize} shown / ${parent.size})`
-        : `${parent.label} (${parent.size})`;
+      const percentage = Number.isFinite(parent.percentage)
+        ? ` · ${parent.percentage.toFixed(1)}%`
+        : '';
+      label.textContent =
+        `${parent.label} (${parent.size}${percentage})${parent.recommended ? ' · main' : ''}`;
       row.append(swatch, label);
       if (isActive) {
-        const marker = document.createElement('span');
+        const marker = ownerDocument.createElement('span');
         marker.className = 'graph-communities-selection-marker';
         marker.textContent = this.focusSource === 'parent' ? 'SELECTED' : 'PROJECT';
         row.appendChild(marker);
@@ -820,18 +1249,20 @@ class GraphCommunitiesPlugin extends Plugin {
     };
 
     const renderedParents = new Set();
-    for (const cluster of this.analysis.clusters) {
+    const legendClusters = this.legendClusters();
+    const legendParents = this.legendParents();
+    for (const cluster of legendClusters) {
       if (!cluster.parentKey) {
         appendClusterRow(cluster);
         continue;
       }
       if (renderedParents.has(cluster.parentKey)) continue;
       renderedParents.add(cluster.parentKey);
-      const parent = this.analysis.parents.find(
+      const parent = legendParents.find(
         (candidate) => candidate.key === cluster.parentKey
       );
       if (parent) appendParentRow(parent);
-      for (const childCluster of this.analysis.clusters.filter(
+      for (const childCluster of legendClusters.filter(
         (candidate) => candidate.parentKey === cluster.parentKey
       )) {
         appendClusterRow(childCluster, true);
@@ -841,6 +1272,8 @@ class GraphCommunitiesPlugin extends Plugin {
 
   restoreAll() {
     this.restoreAllNodeLabels();
+    this.restoreAllNodeVisibility();
+    this.restoreGradientLines(false);
     for (const leaf of this.graphLeaves()) {
       const view = leaf && leaf.view;
       const renderer = view && view.renderer;
@@ -865,6 +1298,7 @@ class GraphCommunitiesPlugin extends Plugin {
   onunload() {
     this.restoreRendererHooks();
     this.restoreAll();
+    this.restoreGradientLines(true);
   }
 }
 
@@ -920,8 +1354,8 @@ class GraphCommunitiesSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName('Maximum communities')
-      .setDesc('Limits the number of visible primary knowledge points. Smaller concepts merge into their closest knowledge neighborhood.')
+      .setName('Internal clustering limit')
+      .setDesc('Limits only the relationship engine. The semantic theme legend always shows every active theme and topic.')
       .addSlider((slider) =>
         slider
           .setLimits(2, 36, 1)
@@ -949,7 +1383,7 @@ class GraphCommunitiesSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Topic-aware clustering')
-      .setDesc('Infer academic/project context and topics from bounded local note content, then combine them with metadata and links.')
+      .setDesc('Infer academic/project context and topics from complete local note content, then combine them with metadata and links.')
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.topicAware).onChange(async (value) => {
           this.plugin.settings.topicAware = value;
@@ -1014,7 +1448,7 @@ class GraphCommunitiesSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Relationship blending')
-      .setDesc('How strongly neighboring communities influence a node color. Higher values create smoother transitions.')
+      .setDesc('How strongly neighboring notes influence internal community analysis. A note still displays only its primary topic color.')
       .addSlider((slider) =>
         slider
           .setLimits(0, 0.85, 0.05)
@@ -1028,7 +1462,7 @@ class GraphCommunitiesSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Blending distance')
-      .setDesc('Number of graph hops used to spread community colors.')
+      .setDesc('Number of graph hops used by internal relationship analysis.')
       .addSlider((slider) =>
         slider
           .setLimits(0, 10, 1)
@@ -1066,7 +1500,7 @@ class GraphCommunitiesSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Color connections')
-      .setDesc('Blend each edge from the colors of its endpoint nodes.')
+      .setDesc('Draw each connection as a true source-to-target color gradient when the renderer supports gradient textures.')
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.colorEdges).onChange(async (value) => {
           this.plugin.settings.colorEdges = value;
@@ -1088,7 +1522,7 @@ class GraphCommunitiesSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Show community legend')
-      .setDesc('Display each community color, hub note, and node count inside the graph view.')
+      .setDesc('Display every active knowledge theme and topic with counts and percentages of effective notes.')
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.showLegend).onChange(async (value) => {
           this.plugin.settings.showLegend = value;

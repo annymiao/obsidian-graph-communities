@@ -2,7 +2,7 @@
 
 ## Runtime boundary
 
-Graph Communities runs locally inside Obsidian. It reads bounded excerpts of Markdown notes through Obsidian's Vault API to compute classifications and colors in memory.
+Graph Communities runs locally inside Obsidian. It reads complete Markdown notes through Obsidian's Vault API to compute classifications and colors in memory.
 
 The plugin does not:
 

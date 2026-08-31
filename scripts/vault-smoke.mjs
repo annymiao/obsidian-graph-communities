@@ -5,9 +5,11 @@ import path from 'node:path';
 const require = createRequire(import.meta.url);
 const core = require('../src/graph-core.js');
 const vaultPath = process.argv[2];
+const topicManifestPath = process.argv[3] ||
+  (vaultPath ? path.join(vaultPath, '.codex/graph/topic-manifest.json') : null);
 
 if (!vaultPath) {
-  console.error('Usage: node scripts/vault-smoke.mjs /path/to/vault');
+  console.error('Usage: node scripts/vault-smoke.mjs /path/to/vault [/path/to/topic-manifest.json]');
   process.exit(2);
 }
 
@@ -52,14 +54,29 @@ for (let index = 0; index < files.length; index += 1) {
   }
 }
 
-const linkGraph = core.buildWeightedGraph(edges, relativePaths);
-const model = core.buildHybridGraph(linkGraph, documents, {
-  priorityKeywords: 'AI, LLM, ASR, RAG, Agent, 儿童陪伴, 产品规划, 竞品, 合规, 工业设计, 端侧研发',
+let topicManifest = null;
+try {
+  topicManifest = core.normalizeTopicManifest(JSON.parse(
+    await readFile(topicManifestPath, 'utf8')
+  ));
+  if (!topicManifest.valid) topicManifest = null;
+} catch {
+  topicManifest = null;
+}
+const filtered = core.filterEffectiveDocuments(documents);
+const effectiveIds = new Set(filtered.effective.map((document) => document.id));
+const effectiveEdges = edges.filter(([source, target]) =>
+  effectiveIds.has(source) && effectiveIds.has(target)
+);
+const linkGraph = core.buildWeightedGraph(effectiveEdges, effectiveIds);
+const model = core.buildHybridGraph(linkGraph, filtered.effective, {
+  priorityKeywords: 'AI, LLM, ASR, RAG, Agent, Research, Product, Compliance, Design',
   projectWeight: 5,
   semanticWeight: 1.4,
   linkWeight: 0.65,
   navigationLinkPenalty: 0.08,
   projectMaxSize: 1200,
+  topicManifest,
 });
 const analysis = core.analyzeGraph(model.graph, {
   maxCommunities: 24,
@@ -69,9 +86,14 @@ const analysis = core.analyzeGraph(model.graph, {
   propagationStrength: 0.52,
   documents: model.documents,
   priorityKeywords: model.priorityKeywords,
+  topicManifest,
 });
 console.log(JSON.stringify({
   noteCount: files.length,
+  effectiveNoteCount: filtered.effective.length,
+  excludedNoteCount: filtered.excluded.size,
+  exclusionReasons: Object.fromEntries(filtered.excluded),
+  topicManifest: topicManifest ? 'portable manifest' : 'built-in fallback',
   resolvedLinkCount,
   communityCount: analysis.clusters.length,
   classifiedNotes: analysis.nodeCount - analysis.neutralCount,
@@ -84,6 +106,8 @@ console.log(JSON.stringify({
     (model.documents.get(cluster.hub)?.displayWeight ?? 1) < 0.2
   ).length,
   parents: analysis.parents,
+  semanticThemes: analysis.semanticThemes,
+  semanticTopics: analysis.semanticTopics,
   clusters: analysis.clusters.map((cluster) => ({
     label: cluster.label,
     colorHex: cluster.colorHex,
@@ -121,6 +145,7 @@ function extractDocument(source, text) {
   const frontmatterTitle = frontmatter.match(/^title:\s*["']?(.+?)["']?\s*$/imu);
   const frontmatterTags = readFrontmatterList(frontmatter, 'tags?');
   const frontmatterAliases = readFrontmatterList(frontmatter, 'aliases?');
+  const graphSecondaryTopics = readFrontmatterList(frontmatter, 'graph_secondary_topics');
   const inlineTags = [...text.matchAll(/(?:^|\s)#([\p{L}\p{N}_/-]{2,})/gmu)]
     .map((match) => match[1]);
   const headings = [...text.matchAll(/^#{1,3}\s+(.+)$/gmu)]
@@ -133,8 +158,26 @@ function extractDocument(source, text) {
     tags: [...frontmatterTags, ...inlineTags],
     aliases: frontmatterAliases,
     headings,
-    content: text.slice(0, 24000),
+    content: text,
+    frontmatter: {
+      graph_primary_theme: readFrontmatterScalar(frontmatter, 'graph_primary_theme'),
+      graph_primary_topic: readFrontmatterScalar(frontmatter, 'graph_primary_topic'),
+      graph_secondary_topics: graphSecondaryTopics,
+      graph_exclude: readFrontmatterScalar(frontmatter, 'graph_exclude'),
+      graph_exclude_reason: readFrontmatterScalar(frontmatter, 'graph_exclude_reason'),
+    },
+    graphPrimaryTheme: readFrontmatterScalar(frontmatter, 'graph_primary_theme'),
+    graphPrimaryTopic: readFrontmatterScalar(frontmatter, 'graph_primary_topic'),
+    graphSecondaryTopics,
+    graphExclude: readFrontmatterScalar(frontmatter, 'graph_exclude'),
+    graphExcludeReason: readFrontmatterScalar(frontmatter, 'graph_exclude_reason'),
   };
+}
+
+function readFrontmatterScalar(frontmatter, key) {
+  const match = frontmatter.match(new RegExp(`^${key}:[ \\t]*(.*?)\\s*$`, 'imu'));
+  if (!match) return undefined;
+  return match[1].trim().replace(/^["']|["']$/g, '');
 }
 
 function splitMetadataList(value) {

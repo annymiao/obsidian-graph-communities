@@ -25,129 +25,183 @@ const GraphCommunitiesCore = (() => {
     '#6FD0FF',
   ];
 
-  const CHILD_COMPANION_PARENT = {
-    key: '@parent:child-companion-work',
-    label: '儿童陪伴机器人（工作）',
-    color: '#DC2626',
-  };
-
-  const PM_SUMMARY_PARENT = {
-    key: '@parent:pm-summary',
-    label: 'PM 资料总结',
-    color: '#2563EB',
-  };
-
-  const PM_SUMMARY_DOMAINS = [
+  // Parent theme colors are intentionally high-chroma and widely separated.
+  // They are reserved for legend parent rows. Notes use a related, but distinct,
+  // subtopic shade so a parent theme and its children never collapse visually.
+  const SEMANTIC_THEME_DEFINITIONS = [
     {
-      key: 'strategy-discovery',
-      label: 'PM · 战略与发现',
-      color: '#2563EB',
-      tag: 'pm summary strategy discovery',
+      key: 'ai-models-systems',
+      label: 'AI & Computing',
+      color: '#D78C15',
+      hue: 220,
+      spread: 26,
+      saturation: 0.86,
+      lightness: 0.57,
     },
     {
-      key: 'execution-growth',
-      label: 'PM · 执行与增长',
-      color: '#7C3AED',
-      tag: 'pm summary execution growth',
+      key: 'ai-collaboration-tools',
+      label: 'Automation & Tools',
+      color: '#1486E2',
+      hue: 276,
+      spread: 24,
+      saturation: 0.78,
+      lightness: 0.57,
     },
     {
-      key: 'data-tools',
-      label: 'PM · 数据与工具',
-      color: '#0891B2',
-      tag: 'pm summary data tools',
+      key: 'research-learning',
+      label: 'Research & Learning',
+      color: '#89890E',
+      hue: 27,
+      spread: 24,
+      saturation: 0.86,
+      lightness: 0.56,
     },
     {
-      key: 'prompts-workflows',
-      label: 'PM · 提示词与工作流',
-      color: '#C026D3',
-      tag: 'pm summary prompts workflows',
+      key: 'data-evidence-governance',
+      label: 'Data & Governance',
+      color: '#CC45A8',
+      hue: 187,
+      spread: 24,
+      saturation: 0.76,
+      lightness: 0.47,
+    },
+    {
+      key: 'robotics-embodiment',
+      label: 'Hardware & Robotics',
+      color: '#E24130',
+      hue: 143,
+      spread: 24,
+      saturation: 0.70,
+      lightness: 0.45,
+    },
+    {
+      key: 'product-business',
+      label: 'Product & Business',
+      color: '#009C66',
+      hue: 48,
+      spread: 22,
+      saturation: 0.82,
+      lightness: 0.49,
+    },
+    {
+      key: 'interaction-experience',
+      label: 'Design & Experience',
+      color: '#9F89FD',
+      hue: 7,
+      spread: 22,
+      saturation: 0.82,
+      lightness: 0.56,
     },
   ];
 
-  const PM_SUMMARY_COLORS = new Map(
-    PM_SUMMARY_DOMAINS.map((domain) => [domain.label, domain.color])
+  const SEMANTIC_THEME_BY_KEY = new Map(
+    SEMANTIC_THEME_DEFINITIONS.map((theme) => [theme.key, theme])
+  );
+  const SEMANTIC_THEME_BY_LABEL = new Map(
+    SEMANTIC_THEME_DEFINITIONS.map((theme) => [theme.label, theme])
   );
 
-  const CHILD_COMPANION_COLORS = new Map([
-    ['产品规划与立项', '#EF4444'],
-    ['合作与课题研究', '#F43F5E'],
-    ['合规与法务', '#BE185D'],
-    ['竞品与市场研究', '#EC4899'],
-    ['工业设计与供应商', '#DB2777'],
-    ['技术与岗位', '#C026D3'],
-    ['演示与汇报', '#FB7185'],
-    ['端侧研发与验证', '#A855F7'],
-    ['招聘', '#E11D48'],
-    ['儿童发展与发展心理学', '#DB2777'],
-    ['儿童心理与情绪支持', '#BE185D'],
-    ['教育学与学习科学', '#F43F5E'],
-    ['语言发展与亲子沟通', '#FB7185'],
-    ['习惯形成与行为设计', '#E11D48'],
-    ['运动发展与具身活动', '#C026D3'],
-    ['儿童交互与体验设计', '#EC4899'],
-    ['家庭系统与亲子支持', '#C0266D'],
-    ['儿童安全与非诊断边界', '#A855F7'],
-    ['适龄内容与版权治理', '#D946EF'],
-    ['儿童语音与 ASR', '#B91C5C'],
-    ['多模态感知与状态估计', '#C2417A'],
-    ['轮次管理与安全状态机', '#A21CAF'],
-    ['数据隐私与合规治理', '#9D174D'],
-    ['硬件与工业设计', '#DB2777'],
-    ['机器人控制与物理安全', '#BE123C'],
-    ['产品战略与产品发现', '#EF4444'],
-    ['产品规划与交付执行', '#F43F5E'],
-    ['市场、竞品与商业模式', '#EC4899'],
-    ['产品数据、实验与增长', '#D946EF'],
+  const TOPIC_THEME_KEYS = new Map([
+    ['developmental-psychology', 'research-learning'],
+    ['emotional-psychology', 'research-learning'],
+    ['learning-science', 'research-learning'],
+    ['language-communication', 'research-learning'],
+    ['habit-behavior', 'research-learning'],
+    ['motor-embodiment', 'research-learning'],
+    ['course-learning', 'research-learning'],
+    ['research-methods', 'research-learning'],
+    ['research-retrieval', 'research-learning'],
+    ['content-governance', 'data-evidence-governance'],
+    ['safety-ethics', 'data-evidence-governance'],
+    ['data-compliance', 'data-evidence-governance'],
+    ['evidence-boundary', 'data-evidence-governance'],
+    ['data-engineering', 'data-evidence-governance'],
+    ['interaction-design', 'interaction-experience'],
+    ['interaction-state-machine', 'interaction-experience'],
+    ['data-visualization', 'ai-collaboration-tools'],
+    ['speech-asr', 'ai-models-systems'],
+    ['multimodal-perception', 'ai-models-systems'],
+    ['language-models', 'ai-models-systems'],
+    ['ai-systems', 'ai-models-systems'],
+    ['model-evaluation', 'ai-models-systems'],
+    ['ai-agents', 'ai-collaboration-tools'],
+    ['prompt-engineering', 'ai-collaboration-tools'],
+    ['ai-assistant-policy', 'ai-collaboration-tools'],
+    ['software-engineering', 'ai-collaboration-tools'],
+    ['tool-automation', 'ai-collaboration-tools'],
+    ['document-artifacts', 'ai-collaboration-tools'],
+    ['hardware-design', 'robotics-embodiment'],
+    ['robotics-control', 'robotics-embodiment'],
+    ['market-competition', 'product-business'],
+    ['product-strategy', 'product-business'],
+    ['product-execution', 'product-business'],
+    ['metrics-growth', 'product-business'],
   ]);
 
-  // Knowledge colors are organized as adjacent hue bands. A note's primary
-  // knowledge point selects the band position; secondary points only tint the
-  // node inside that neighborhood. This keeps colors semantic and stable across
-  // recomputes instead of tying them to whichever community happens to rank first.
-  const KNOWLEDGE_DOMAIN_STYLES = new Map([
-    ['儿童发展与教育', { hue: 18, spread: 42, saturation: 0.82, lightness: 0.56 }],
-    ['产品与商业', { hue: 45, spread: 24, saturation: 0.84, lightness: 0.50 }],
-    ['硬件与具身', { hue: 145, spread: 30, saturation: 0.72, lightness: 0.43 }],
-    ['AI 与工程', { hue: 211, spread: 52, saturation: 0.80, lightness: 0.52 }],
-    ['治理与证据', { hue: 267, spread: 34, saturation: 0.76, lightness: 0.54 }],
-    ['交互与安全', { hue: 322, spread: 44, saturation: 0.78, lightness: 0.52 }],
+  const FALLBACK_TOPIC_COLORS = new Map([
+    ['language-models', '#FE9772'],
+    ['ai-agents', '#CA744C'],
+    ['speech-asr', '#EE8B45'],
+    ['multimodal-perception', '#BD6F17'],
+    ['ai-systems', '#B88313'],
+    ['model-evaluation', '#CEA11D'],
+    ['prompt-engineering', '#0AA8DB'],
+    ['ai-assistant-policy', '#107CAF'],
+    ['software-engineering', '#1A92E4'],
+    ['tool-automation', '#1169C4'],
+    ['data-visualization', '#6A97F1'],
+    ['document-artifacts', '#5267D3'],
+    ['developmental-psychology', '#B79715'],
+    ['emotional-psychology', '#82740B'],
+    ['learning-science', '#92921F'],
+    ['language-communication', '#657307'],
+    ['habit-behavior', '#86A751'],
+    ['motor-embodiment', '#A8B84A'],
+    ['course-learning', '#B79715'],
+    ['research-methods', '#82740B'],
+    ['research-retrieval', '#92921F'],
+    ['hardware-design', '#FE5954'],
+    ['robotics-control', '#C43E1F'],
+    ['market-competition', '#4DB35F'],
+    ['product-strategy', '#258854'],
+    ['product-execution', '#1CA577'],
+    ['metrics-growth', '#097D65'],
+    ['interaction-design', '#B5A9FC'],
+    ['interaction-state-machine', '#9F89FD'],
+    ['data-engineering', '#C05AAF'],
+    ['data-compliance', '#DC5EDD'],
+    ['evidence-boundary', '#AE419A'],
+    ['safety-ethics', '#DA4DA9'],
+    ['content-governance', '#BD0575'],
   ]);
 
-  const CHILD_COMPANION_DOMAIN_STYLES = new Map([
-    ['儿童发展与教育', { hue: 358, spread: 24, saturation: 0.88, lightness: 0.56 }],
-    ['产品与商业', { hue: 15, spread: 24, saturation: 0.90, lightness: 0.55 }],
-    ['硬件与具身', { hue: 338, spread: 18, saturation: 0.80, lightness: 0.48 }],
-    ['交互与安全', { hue: 320, spread: 22, saturation: 0.82, lightness: 0.50 }],
-    ['治理与证据', { hue: 300, spread: 18, saturation: 0.82, lightness: 0.46 }],
-    ['AI 与工程', { hue: 285, spread: 22, saturation: 0.76, lightness: 0.52 }],
+  const SYSTEM_PATH_SEGMENTS = new Set([
+    '.obsidian',
+    '.agents',
+    '.codex',
+    '.git',
+    '.github',
+    'node_modules',
+    'dist',
+    'build',
+    'generated',
+    '_generated',
+    '.cache',
+    'cache',
+    'tmp',
+    '.trash',
+    '__pycache__',
   ]);
 
-  const CORE_CHILD_KNOWLEDGE_KEYS = [
-    'child-hci',
-    'language-development',
-    'habit-behavior',
-    'emotional-psychology',
-    'motor-embodiment',
-    'learning-science',
-    'child-development',
-    'safety-ethics',
-    'family-systems',
-    'speech-asr',
-    'data-compliance',
-    'hardware-design',
-    'robotics-control',
-    'market-competition',
-    'product-execution',
-  ];
-
-  const CHILD_COMPANION_CHILD_LABELS = [
-    '产品规划与立项',
-    '合作与课题研究',
-    '端侧研发与验证',
-    '竞品与市场研究',
-    '合规与法务',
-    '工业设计与供应商',
-  ];
+  const SYSTEM_DOCUMENT_NAMES = new Set([
+    'readme',
+    'agents',
+    'changelog',
+    'license',
+    'contributing',
+    'security',
+    'code_of_conduct',
+  ]);
 
   const GENERIC_DOCUMENT_NAMES = new Set([
     'readme', 'index', 'home', 'homepage', 'overview', 'summary', 'contents',
@@ -158,8 +212,7 @@ const GraphCommunitiesCore = (() => {
     'workflows', 'workflow', 'markdown', 'lectures', 'archive', 'legacy',
     'skill output samples', 'release plans', 'issues archive', 'content',
     '首页', '主页', '目录', '索引', '导航', '总览', '概览', '说明', '欢迎',
-    'desktop', 'desktop资料', 'shared knowledge', 'sharedknowledge',
-    'shared-knowledge', 'resources', 'resource', '资料', '共享知识', '共用知识',
+    'resources', 'resource', '资料',
   ]);
 
   const GENERIC_TERMS = new Set([
@@ -170,77 +223,64 @@ const GraphCommunitiesCore = (() => {
 
   const CONTENT_TOPIC_RULES = [
     {
-      key: 'child-companion',
-      label: '儿童陪伴机器人',
-      domain: '项目语境',
-      contextOnly: true,
-      terms: ['儿童陪伴', '陪伴机器人', '宠物伙伴', '儿童模型', '家长端'],
-    },
-    {
-      key: 'child-development',
-      label: '儿童发展与发展心理学',
-      domain: '儿童发展与教育',
-      terms: ['儿童发展', '发展心理', '发展阶段', '认知发展', '社会性发展', '依恋', '执行功能', '分龄', '年龄阶段', '3-5 岁', '3–5 岁', '6-8 岁', '6–8 岁'],
+      key: 'developmental-psychology',
+      label: 'Developmental Psychology',
+      domain: 'Research & Learning',
+      terms: ['developmental psychology', 'human development', 'cognitive development', 'social development', '发展心理学', '认知发展', '社会发展'],
     },
     {
       key: 'emotional-psychology',
-      label: '儿童心理与情绪支持',
-      domain: '儿童发展与教育',
-      terms: ['儿童心理', '情绪陪护', '情绪支持', '情绪调节', '情绪识别', '情绪感知', '心理安全', '安抚', '哭泣', '低落', '害怕', 'emotion support', 'emotional regulation'],
+      label: 'Psychology & Emotion',
+      domain: 'Research & Learning',
+      terms: ['psychology', 'emotion', 'emotional regulation', 'affect', '心理学', '情绪', '情绪调节'],
     },
     {
       key: 'learning-science',
-      label: '教育学与学习科学',
-      domain: '儿童发展与教育',
-      terms: ['教育学', '学习科学', '教学设计', '认知负荷', '脚手架', '游戏化学习', '分级阅读', '幼小衔接', '教研', '识字', '数学启蒙', '英语口语', '绘本', 'learning science', 'pedagogy'],
+      label: 'Learning Science',
+      domain: 'Research & Learning',
+      terms: ['learning science', 'pedagogy', 'instructional design', 'cognitive load', 'scaffolding', '学习科学', '教学设计', '认知负荷'],
     },
     {
-      key: 'language-development',
-      label: '语言发展与亲子沟通',
-      domain: '儿童发展与教育',
-      terms: ['语言发展', '儿童语言', '表达陪伴', '表达转译', '亲子沟通', '复述确认', '低压力追问', '事件表达', '叙事能力', '语用', '语言能力', 'language development'],
+      key: 'language-communication',
+      label: 'Language & Communication',
+      domain: 'Research & Learning',
+      terms: ['language development', 'communication', 'linguistics', 'pragmatics', 'narrative', '语言发展', '沟通', '语言学', '语用'],
     },
     {
       key: 'habit-behavior',
-      label: '习惯形成与行为设计',
-      domain: '儿童发展与教育',
-      terms: ['习惯养成', '习惯形成', '行为设计', '行为改变', '正向强化', '奖励机制', '生活习惯', '刷牙', '睡前准备', '收拾玩具', 'habit formation', 'behavior design'],
+      label: 'Behavior & Habits',
+      domain: 'Research & Learning',
+      terms: ['habit formation', 'behavior change', 'behavior design', 'reinforcement', '习惯形成', '行为改变', '行为设计'],
     },
     {
       key: 'motor-embodiment',
-      label: '运动发展与具身活动',
-      domain: '儿童发展与教育',
-      terms: ['运动发展', '身体活动', '动作模仿', '身体部位认知', '节奏律动', '粗大动作', '具身认知', '投影跳格子', 'motor development', 'embodied cognition'],
+      label: 'Embodied Cognition',
+      domain: 'Research & Learning',
+      terms: ['embodied cognition', 'motor learning', 'physical activity', '具身认知', '运动学习', '身体活动'],
     },
     {
-      key: 'child-hci',
-      label: '儿童交互与体验设计',
-      domain: '交互与安全',
-      terms: ['儿童交互', '人机交互', '宠物化体验', '宠物感', '陪伴体验', '触摸反馈', '表情屏', '多模态交互', '可拒绝', '可退出', 'child-computer interaction', 'human-computer interaction'],
-    },
-    {
-      key: 'family-systems',
-      label: '家庭系统与亲子支持',
-      domain: '交互与安全',
-      terms: ['亲子支持', '家庭支持', '家庭系统', '家庭规则', '家长观察', '家长周报', '监护人', '家长端', '家庭场景', '亲子关系', 'family system'],
+      key: 'interaction-design',
+      label: 'Interaction Design',
+      domain: 'Design & Experience',
+      terms: ['interaction design', 'human-computer interaction', 'user experience', 'usability', 'prototype', '交互设计', '人机交互', '用户体验', '可用性'],
     },
     {
       key: 'safety-ethics',
-      label: '儿童安全与非诊断边界',
-      domain: '交互与安全',
-      terms: ['安全边界', '非诊断', '不做诊断', '低压力交互', '拒绝退出', '统一退出', '风险升级', '情绪勒索', '儿童安全', 'safety eval', '危机评估', '能力评价'],
+      label: 'Safety & Ethics',
+      domain: 'Data & Governance',
+      terms: ['safety', 'ethics', 'risk assessment', 'safety evaluation', '安全', '伦理', '风险评估'],
     },
     {
       key: 'content-governance',
-      label: '适龄内容与版权治理',
-      domain: '交互与安全',
-      terms: ['适龄内容', '内容安全', '版权元数据', '内容版权', '分龄内容', '儿童化表达', '内容审查', '敏感内容', '年龄分级', 'age appropriate'],
+      label: 'Content Governance',
+      domain: 'Data & Governance',
+      terms: ['content governance', 'content safety', 'copyright', 'moderation', '内容治理', '内容安全', '版权', '内容审核'],
     },
     {
       key: 'speech-asr',
-      label: '儿童语音与 ASR',
+      label: 'Speech Recognition',
       domain: 'AI 与工程',
-      terms: ['automatic speech recognition', 'speech recognition', 'speech model', 'asr', '语音识别', '儿童语音', '语音模型', '声学模型', 'wer', 'cer', 'vad', '远场语音'],
+      terms: ['automatic speech recognition', 'speech recognition', 'speech model', 'asr', '语音识别', '语音模型', '声学模型', 'wer', 'cer', 'vad'],
     },
     {
       key: 'multimodal-perception',
@@ -288,7 +328,7 @@ const GraphCommunitiesCore = (() => {
       key: 'data-compliance',
       label: '数据隐私与合规治理',
       domain: '治理与证据',
-      terms: ['privacy', 'compliance', 'data governance', '隐私', '合规', '数据治理', '监护人同意', '授权', '删除', '撤回', '数据出境', '算法备案', '数据红线'],
+      terms: ['privacy', 'compliance', 'data governance', 'consent', '隐私', '合规', '数据治理', '用户同意', '授权', '删除', '撤回', '数据出境', '算法备案', '数据红线'],
     },
     {
       key: 'evidence-boundary',
@@ -383,7 +423,7 @@ const GraphCommunitiesCore = (() => {
     {
       key: 'course-learning',
       label: '课程学习与知识组织',
-      domain: '儿童发展与教育',
+      domain: 'Research & Learning',
       terms: ['lecture', 'assignment', 'course', 'syllabus', 'playlist', 'study guide', 'learning objective', '课程', '讲义', '作业', '学习目标', '视频学习'],
     },
   ];
@@ -462,11 +502,16 @@ const GraphCommunitiesCore = (() => {
     return graph;
   }
 
-  function graphFromResolvedLinks(resolvedLinks = {}, nodeIds = []) {
+  function graphFromResolvedLinks(resolvedLinks = {}, nodeIds = [], options = {}) {
     const graph = createGraph(nodeIds);
+    const allowed = options.restrictToNodeIds
+      ? new Set([...graph.keys()])
+      : null;
     for (const [source, targets] of Object.entries(resolvedLinks || {})) {
+      if (allowed && !allowed.has(source)) continue;
       ensureNode(graph, source);
       for (const [target, count] of Object.entries(targets || {})) {
+        if (allowed && !allowed.has(target)) continue;
         addUndirectedEdge(graph, source, target, Math.max(1, Number(count) || 1));
       }
     }
@@ -500,27 +545,6 @@ const GraphCommunitiesCore = (() => {
     return humanizeSegment(value).normalize('NFKC').toLocaleLowerCase().trim();
   }
 
-  function detectPmSummaryDomain(document) {
-    const normalizedPath = String(document.path || '').normalize('NFKC').toLocaleLowerCase();
-    const tags = new Set((document.tags || []).map(normalizedTerm));
-    if (/(?:^|\/)(?:pm资料总结|pm[- _]?summary)\.md$/iu.test(normalizedPath) ||
-        tags.has('pm summary root')) {
-      return PM_SUMMARY_DOMAINS[0];
-    }
-    if (!tags.has('pm summary')) return null;
-    return PM_SUMMARY_DOMAINS.find((domain) => tags.has(domain.tag)) || null;
-  }
-
-  function detectPmRepresentativeDomain(document) {
-    const tags = new Set((document.tags || []).map(normalizedTerm));
-    const representative = tags.has('pm representative') ||
-      /^type:\s*pm-representative\s*$/imu.test(document.content || '');
-    if (!representative) return null;
-    return PM_SUMMARY_DOMAINS.find((domain) =>
-      tags.has(`pm domain ${normalizedTerm(domain.key)}`)
-    ) || null;
-  }
-
   function basenameWithoutExtension(id) {
     const parts = String(id || '').split('/');
     return (parts.pop() || '').replace(/\.md$/i, '');
@@ -531,7 +555,7 @@ const GraphCommunitiesCore = (() => {
     const compact = normalized.replace(/[\s_-]+/g, '');
     if (!normalized) return true;
     if (GENERIC_DOCUMENT_NAMES.has(normalized) || GENERIC_DOCUMENT_NAMES.has(compact)) return true;
-    return /(?:readme|index|homepage|dashboard|overview|contents|desktop资料|sharedknowledge|目录|索引|导航|首页|总览|概览|共用知识|共享知识)/iu.test(compact);
+    return /(?:readme|index|homepage|dashboard|overview|contents|目录|索引|导航|首页|总览|概览)/iu.test(compact);
   }
 
   function isNavigationDocument(id, document = {}) {
@@ -542,6 +566,133 @@ const GraphCommunitiesCore = (() => {
     }
     const values = [basenameWithoutExtension(id), document.title, ...(document.aliases || [])];
     return values.filter(Boolean).some((value) => isGenericLabel(value));
+  }
+
+  function booleanFrontmatterValue(value) {
+    if (value === true || value === 1) return true;
+    if (typeof value !== 'string') return false;
+    return ['true', 'yes', '1', 'on'].includes(value.trim().toLocaleLowerCase());
+  }
+
+  function stripFrontmatter(value) {
+    const text = String(value || '').replace(/^\uFEFF/u, '');
+    if (!text.startsWith('---')) return text;
+    const closing = text.indexOf('\n---', 3);
+    return closing >= 0 ? text.slice(closing + 4) : text;
+  }
+
+  function normalizedMeaningfulContent(value) {
+    return stripFrontmatter(value)
+      .replace(/<!--[\s\S]*?-->/gu, ' ')
+      .replace(/```[\s\S]*?```/gu, (block) => block.replace(/\s+/gu, ' '))
+      .replace(/\s+/gu, ' ')
+      .normalize('NFKC')
+      .trim()
+      .toLocaleLowerCase();
+  }
+
+  function canonicalDuplicateContent(value) {
+    return String(value || '')
+      .replace(/\r\n?/gu, '\n')
+      .split('\n')
+      .map((line) => line.trimEnd())
+      .join('\n')
+      .trim();
+  }
+
+  function isLinkOnlyContent(value, id = '') {
+    const original = stripFrontmatter(value);
+    const linkCount =
+      (original.match(/\[\[[^\]]+\]\]/gu) || []).length +
+      (original.match(/!?\[[^\]]*\]\([^)]+\)/gu) || []).length +
+      (original.match(/https?:\/\/\S+/giu) || []).length;
+    const body = stripFrontmatter(value)
+      .replace(/<!--[\s\S]*?-->/gu, ' ')
+      .replace(/```[\s\S]*?```/gu, ' ')
+      .replace(/^#{1,6}\s+.*$/gmu, ' ')
+      .replace(/!\[\[[^\]]+\]\]/gu, ' ')
+      .replace(/\[\[[^\]]+\]\]/gu, ' ')
+      .replace(/!\[[^\]]*\]\([^)]+\)/gu, ' ')
+      .replace(/\[[^\]]+\]\([^)]+\)/gu, ' ')
+      .replace(/https?:\/\/\S+/giu, ' ')
+      .replace(/^\s*\|.*\|\s*$/gmu, ' ')
+      .replace(/^\s*[-*+]\s*/gmu, ' ')
+      .replace(/[^0-9A-Za-z\u3400-\u9fff]+/gu, '');
+    const originalMeaningful = original.replace(
+      /[^0-9A-Za-z\u3400-\u9fff]+/gu,
+      ''
+    );
+    const name = normalizedTerm(basenameWithoutExtension(id));
+    const navigationNamed = ['导航', '索引', '目录', 'toc'].some((term) =>
+      name.includes(term)
+    );
+    if (navigationNamed && linkCount >= 3) {
+      const ratio = body.length / Math.max(1, originalMeaningful.length);
+      return body.length < 180 || ratio < 0.16;
+    }
+    return linkCount > 0 && body.length < 16;
+  }
+
+  function graphExclusionReason(document = {}) {
+    const id = String(document.id || document.path || '').replace(/\\/gu, '/');
+    const rawName = id.split('/').pop() || '';
+    if (rawName.startsWith('._')) return 'AppleDouble metadata';
+    const basename = basenameWithoutExtension(id);
+    const normalizedName = normalizedTerm(basename).replace(/\s+/gu, '_');
+    const frontmatter = document.frontmatter || {};
+    if (
+      booleanFrontmatterValue(document.graphExclude) ||
+      booleanFrontmatterValue(frontmatter.graph_exclude)
+    ) {
+      return String(
+        document.graphExcludeReason ||
+        frontmatter.graph_exclude_reason ||
+        'frontmatter graph_exclude'
+      );
+    }
+    const segments = id.split('/').slice(0, -1).map((segment) =>
+      segment.normalize('NFKC').toLocaleLowerCase()
+    );
+    if (segments.some((segment) => SYSTEM_PATH_SEGMENTS.has(segment))) {
+      return 'system or generated path';
+    }
+    if (SYSTEM_DOCUMENT_NAMES.has(normalizedName) || normalizedName.includes('readme')) {
+      return `${basename || 'system'} document`;
+    }
+    const meaningful = normalizedMeaningfulContent(document.content || document.body || '');
+    if (!meaningful) return 'empty document';
+    if (isLinkOnlyContent(document.content || document.body || '', id)) {
+      return 'link-only navigation document';
+    }
+    return null;
+  }
+
+  function filterEffectiveDocuments(documentInput = []) {
+    const source = documentInput instanceof Map
+      ? [...documentInput.values()]
+      : Array.isArray(documentInput) ? documentInput : [];
+    const ordered = [...source].sort((a, b) =>
+      String(a.id || a.path).localeCompare(String(b.id || b.path))
+    );
+    const effective = [];
+    const excluded = new Map();
+    const contentOwners = new Map();
+    for (const document of ordered) {
+      const id = String(document.id || document.path || '');
+      const reason = graphExclusionReason(document);
+      if (reason) {
+        excluded.set(id, reason);
+        continue;
+      }
+      const contentKey = canonicalDuplicateContent(document.content || document.body || '');
+      if (contentOwners.has(contentKey)) {
+        excluded.set(id, `duplicate of ${contentOwners.get(contentKey)}`);
+        continue;
+      }
+      contentOwners.set(contentKey, id);
+      effective.push(document);
+    }
+    return { effective, excluded };
   }
 
   function tokenizeSemanticText(value) {
@@ -598,8 +749,16 @@ const GraphCommunitiesCore = (() => {
         aliases: asStringArray(raw.aliases),
         tags: asStringArray(raw.tags).map((tag) => tag.replace(/^#/, '')),
         headings: asStringArray(raw.headings).slice(0, 16),
-        content: String(raw.content || raw.body || '').slice(0, 24000),
+        content: String(raw.content || raw.body || ''),
         navigation: raw.navigation,
+        frontmatter: raw.frontmatter && typeof raw.frontmatter === 'object'
+          ? raw.frontmatter
+          : {},
+        graphPrimaryTheme: raw.graphPrimaryTheme,
+        graphPrimaryTopic: raw.graphPrimaryTopic,
+        graphSecondaryTopics: asStringArray(raw.graphSecondaryTopics),
+        graphExclude: raw.graphExclude,
+        graphExcludeReason: raw.graphExcludeReason,
       });
     }
     return documents;
@@ -720,43 +879,6 @@ const GraphCommunitiesCore = (() => {
       : ranked.find((rule) => rule.key === 'execution-growth');
   }
 
-  function desktopAlignedProjectLabel(primary, secondary) {
-    const key = secondary?.key || primary?.key;
-    return {
-      'product-strategy': '产品规划与立项',
-      'market-competition': '竞品与市场研究',
-      'data-compliance': '合规与法务',
-      'hardware-design': '工业设计与供应商',
-      'speech-asr': '端侧研发与验证',
-      'language-models': '端侧研发与验证',
-      'ai-systems': '端侧研发与验证',
-      'model-evaluation': '端侧研发与验证',
-      'ai-agents': '合作与课题研究',
-      'prompt-engineering': '合作与课题研究',
-    }[key] || '合作与课题研究';
-  }
-
-  function desktopWorkCollection(path) {
-    const normalizedPath = String(path || '').normalize('NFKC').toLocaleLowerCase();
-    const folders = [
-      ['01', '产品规划与立项'],
-      ['02', '合作与课题研究'],
-      ['03', '合规与法务'],
-      ['04', '竞品与市场研究'],
-      ['05', '工业设计与供应商'],
-      ['06', '技术与岗位'],
-      ['07', '演示与汇报'],
-      ['08', '端侧研发与验证'],
-      ['09', '招聘'],
-    ];
-    for (const [number, label] of folders) {
-      if (new RegExp(`(?:^|/)${number}[_ .-]*${label}(?:/|$)`, 'u').test(normalizedPath)) {
-        return { key: `@desktop:work:${number}`, label };
-      }
-    }
-    return null;
-  }
-
   function stableTextHash(value) {
     let hash = 2166136261;
     const text = String(value || '').normalize('NFKC').toLocaleLowerCase().slice(0, 12000);
@@ -765,6 +887,180 @@ const GraphCommunitiesCore = (() => {
       hash = Math.imul(hash, 16777619);
     }
     return (hash >>> 0).toString(36);
+  }
+
+  function stableHashNumber(value) {
+    return Number.parseInt(stableTextHash(value), 36) >>> 0;
+  }
+
+  function validHexColor(value) {
+    return typeof value === 'string' && /^#[0-9a-f]{6}$/iu.test(value.trim());
+  }
+
+  function semanticTheme(value) {
+    const normalized = String(value || '').trim();
+    if (!normalized) return null;
+    return SEMANTIC_THEME_BY_KEY.get(normalized) ||
+      SEMANTIC_THEME_BY_LABEL.get(normalized) ||
+      SEMANTIC_THEME_DEFINITIONS.find((theme) =>
+        normalizedTerm(theme.key) === normalizedTerm(normalized) ||
+        normalizedTerm(theme.label) === normalizedTerm(normalized)
+      ) ||
+      null;
+  }
+
+  function semanticThemeForTopic(topic) {
+    if (!topic) return null;
+    const explicit = semanticTheme(topic.themeKey || topic.theme || topic.domain);
+    if (explicit) return explicit;
+    const themeKey = TOPIC_THEME_KEYS.get(topic.key);
+    return themeKey ? SEMANTIC_THEME_BY_KEY.get(themeKey) : null;
+  }
+
+  function normalizeTopicManifest(value) {
+    if (!value || typeof value !== 'object' || !Array.isArray(value.themes)) {
+      return { valid: false, error: 'themes must be an array', themes: [], topics: [] };
+    }
+    const themeKeys = new Set();
+    const topicKeys = new Set();
+    const themes = [];
+    const topics = [];
+    for (const rawTheme of value.themes) {
+      const key = String(rawTheme?.key || '').trim();
+      const label = String(rawTheme?.label || '').trim();
+      const color = String(rawTheme?.color || '').trim().toUpperCase();
+      if (!key || !label || !validHexColor(color)) {
+        return {
+          valid: false,
+          error: 'each theme requires unique key, label, and #RRGGBB color',
+          themes: [],
+          topics: [],
+        };
+      }
+      if (themeKeys.has(key)) {
+        return { valid: false, error: `duplicate theme key: ${key}`, themes: [], topics: [] };
+      }
+      themeKeys.add(key);
+      const theme = { key, label, color, topics: [] };
+      for (const rawTopic of Array.isArray(rawTheme.topics) ? rawTheme.topics : []) {
+        const topicKey = String(rawTopic?.key || '').trim();
+        const topicLabel = String(rawTopic?.label || '').trim();
+        const topicColor = rawTopic?.color == null
+          ? null
+          : String(rawTopic.color).trim().toUpperCase();
+        if (!topicKey || !topicLabel || (topicColor != null && !validHexColor(topicColor))) {
+          return {
+            valid: false,
+            error: `invalid topic inside theme ${key}`,
+            themes: [],
+            topics: [],
+          };
+        }
+        if (topicKeys.has(topicKey)) {
+          return { valid: false, error: `duplicate topic key: ${topicKey}`, themes: [], topics: [] };
+        }
+        topicKeys.add(topicKey);
+        const topic = {
+          key: topicKey,
+          label: topicLabel,
+          color: topicColor,
+          terms: asStringArray(rawTopic.terms).map((term) =>
+            term.normalize('NFKC').toLocaleLowerCase()
+          ),
+          themeKey: key,
+          themeLabel: label,
+          themeColor: color,
+          domain: label,
+        };
+        theme.topics.push(topic);
+        topics.push(topic);
+      }
+      themes.push(theme);
+    }
+    if (!themes.length || !topics.length) {
+      return {
+        valid: false,
+        error: 'manifest must define at least one theme and topic',
+        themes: [],
+        topics: [],
+      };
+    }
+    return {
+      valid: true,
+      version: Number(value.version) || 1,
+      themes,
+      topics,
+    };
+  }
+
+  function topicCatalog(options = {}) {
+    const manifest = options.topicManifest;
+    if (manifest?.valid && Array.isArray(manifest.topics)) return manifest.topics;
+    return CONTENT_TOPIC_RULES.filter((rule) => !rule.contextOnly).map((rule) => {
+      const theme = semanticThemeForTopic(rule);
+      return {
+        ...rule,
+        themeKey: theme?.key,
+        themeLabel: theme?.label,
+        themeColor: theme?.color,
+        domain: theme?.label || rule.domain,
+      };
+    });
+  }
+
+  function topicFromValue(value, options = {}) {
+    const normalized = normalizedTerm(value);
+    if (!normalized) return null;
+    return topicCatalog(options).find((topic) =>
+      normalizedTerm(topic.key) === normalized ||
+      normalizedTerm(topic.label) === normalized
+    ) || null;
+  }
+
+  function customTheme(value, options = {}) {
+    const normalized = normalizedTerm(value);
+    if (!normalized) return null;
+    const manifestTheme = options.topicManifest?.valid
+      ? options.topicManifest.themes.find((theme) =>
+        normalizedTerm(theme.key) === normalized ||
+        normalizedTerm(theme.label) === normalized
+      )
+      : null;
+    if (manifestTheme) return manifestTheme;
+    return semanticTheme(value);
+  }
+
+  function topicSemanticColor(topic, options = {}) {
+    if (!topic) return null;
+    if (validHexColor(topic.color)) return hexToRgbInt(topic.color);
+    if (!options.topicManifest?.valid && FALLBACK_TOPIC_COLORS.has(topic.key)) {
+      return hexToRgbInt(FALLBACK_TOPIC_COLORS.get(topic.key));
+    }
+    const rule = knowledgeRule(topic.key || topic.label);
+    const builtinTheme = semanticThemeForTopic(rule || topic);
+    const theme = options.theme ||
+      customTheme(topic.themeKey || topic.themeLabel || topic.domain, options) ||
+      builtinTheme;
+    if (!theme) return null;
+    const parentColor = validHexColor(theme.color) ? hexToRgbInt(theme.color) : null;
+    const hue = Number.isFinite(theme.hue)
+      ? theme.hue
+      : parentColor == null ? stableHashNumber(theme.key) % 360 : rgbIntToHsl(parentColor).h;
+    const siblings = topicCatalog(options).filter((candidate) =>
+      (candidate.themeKey || semanticThemeForTopic(candidate)?.key) === theme.key
+    );
+    const index = Math.max(0, siblings.findIndex((candidate) => candidate.key === topic.key));
+    const offsetSequence = [-11, 11, -20, 20, -5, 5, -27, 27, -15, 15, -23, 23];
+    const hashedIndex = index >= 0 ? index : stableHashNumber(topic.key || topic.label);
+    const hueOffset = offsetSequence[hashedIndex % offsetSequence.length];
+    const saturation = Number.isFinite(theme.saturation) ? theme.saturation : 0.76;
+    const lightness = Number.isFinite(theme.lightness) ? theme.lightness : 0.55;
+    const lightnessOffsets = [0.08, -0.055, 0.035, -0.085, 0.06, -0.025];
+    return hslToRgbInt(
+      hue + hueOffset,
+      clamp(saturation + (hashedIndex % 2 === 0 ? 0.04 : -0.05), 0.58, 0.90),
+      clamp(lightness + lightnessOffsets[hashedIndex % lightnessOffsets.length], 0.38, 0.66)
+    );
   }
 
   function pmCanonicalKey(document) {
@@ -782,9 +1078,6 @@ const GraphCommunitiesCore = (() => {
       .test(normalizedPath) || /(?:^|\/)(?:history|changelog|contributing|code_of_conduct|privacy|todos?)\.md$/iu
       .test(normalizedPath);
     if (explicitSupport || isNavigationDocument(document.id, document)) return true;
-
-    const packagedResearchCorpus = /(?:^|\/)pm-skill-research\/sources\//u.test(normalizedPath);
-    if (packagedResearchCorpus) return /(?:^|\/)skill\.md$/u.test(normalizedPath) === false;
     return false;
   }
 
@@ -798,13 +1091,16 @@ const GraphCommunitiesCore = (() => {
     ].join('\n').normalize('NFKC').toLocaleLowerCase();
   }
 
-  function inferDocumentTaxonomy(document) {
-    const contentText = contentTextForKnowledge(document);
+  function inferDocumentTaxonomy(document, options = {}) {
+    const contentText = String(document.content || '')
+      .normalize('NFKC')
+      .toLocaleLowerCase();
     const fallbackText = [document.title, document.path].join('\n')
       .normalize('NFKC').toLocaleLowerCase();
     const searchable = contentText.trim() ? contentText : fallbackText;
     const normalizedTags = new Set((document.tags || []).map(normalizedTerm));
-    const topics = CONTENT_TOPIC_RULES
+    const contextTopics = CONTENT_TOPIC_RULES
+      .filter((rule) => rule.contextOnly)
       .map((rule) => ({
         ...rule,
         score: scoreTerms(searchable, rule.terms) +
@@ -812,7 +1108,85 @@ const GraphCommunitiesCore = (() => {
       }))
       .filter((topic) => topic.score >= 1)
       .sort((a, b) => b.score - a.score || a.key.localeCompare(b.key));
-    const knowledgePoints = topics.filter((topic) => !topic.contextOnly);
+    let knowledgePoints = topicCatalog(options)
+      .map((rule) => ({
+        ...rule,
+        score: scoreTerms(searchable, rule.terms || []) +
+          (normalizedTags.has(`knowledge point ${normalizedTerm(rule.key)}`) ? 12 : 0),
+      }))
+      .filter((topic) => topic.score >= 1)
+      .sort((a, b) => b.score - a.score || a.key.localeCompare(b.key));
+    const frontmatter = document.frontmatter || {};
+    const primaryValue = document.graphPrimaryTopic ?? frontmatter.graph_primary_topic;
+    const themeValue = document.graphPrimaryTheme ?? frontmatter.graph_primary_theme;
+    const secondaryValue = document.graphSecondaryTopics?.length
+      ? document.graphSecondaryTopics
+      : frontmatter.graph_secondary_topics;
+    const explicitTheme = customTheme(themeValue, options);
+    if (primaryValue != null && String(primaryValue).trim()) {
+      const configured = topicFromValue(primaryValue, options);
+      const primary = configured
+        ? { ...configured, score: Number.MAX_SAFE_INTEGER }
+        : {
+          key: normalizedTerm(primaryValue).replace(/\s+/gu, '-'),
+          label: humanizeSegment(primaryValue),
+          domain: explicitTheme?.label || '自定义主题',
+          themeKey: explicitTheme?.key || `custom:${normalizedTerm(themeValue || 'theme')}`,
+          themeLabel: explicitTheme?.label || humanizeSegment(themeValue || '自定义主题'),
+          themeColor: explicitTheme?.color || '#64748B',
+          terms: [],
+          score: Number.MAX_SAFE_INTEGER,
+        };
+      if (explicitTheme) {
+        primary.domain = explicitTheme.label;
+        primary.themeKey = explicitTheme.key;
+        primary.themeLabel = explicitTheme.label;
+        primary.themeColor = explicitTheme.color;
+      }
+      knowledgePoints = [
+        primary,
+        ...knowledgePoints.filter((topic) => topic.key !== primary.key),
+      ];
+    } else if (knowledgePoints[0] && explicitTheme) {
+      knowledgePoints[0] = {
+        ...knowledgePoints[0],
+        domain: explicitTheme.label,
+        themeKey: explicitTheme.key,
+        themeLabel: explicitTheme.label,
+        themeColor: explicitTheme.color,
+      };
+    }
+    let secondaryKnowledgePoints = knowledgePoints.slice(1);
+    const explicitSecondaryValues = asStringArray(secondaryValue);
+    if (explicitSecondaryValues.length) {
+      const primary = knowledgePoints[0];
+      const explicitSecondary = explicitSecondaryValues
+        .map((value) => {
+          const configured = topicFromValue(value, options);
+          if (configured) return { ...configured, score: Number.MAX_SAFE_INTEGER - 1 };
+          return {
+            key: normalizedTerm(value).replace(/\s+/gu, '-'),
+            label: humanizeSegment(value),
+            domain: explicitTheme?.label || '自定义主题',
+            themeKey: explicitTheme?.key || `custom:${normalizedTerm(themeValue || 'theme')}`,
+            themeLabel: explicitTheme?.label || humanizeSegment(themeValue || '自定义主题'),
+            themeColor: explicitTheme?.color || '#64748B',
+            terms: [],
+            score: Number.MAX_SAFE_INTEGER - 1,
+          };
+        })
+        .filter((topic, index, list) =>
+          topic.key !== primary?.key &&
+          list.findIndex((candidate) => candidate.key === topic.key) === index
+        );
+      secondaryKnowledgePoints = explicitSecondary;
+      knowledgePoints = primary ? [primary, ...explicitSecondary] : [];
+    }
+    const topics = [
+      ...contextTopics,
+      ...knowledgePoints,
+      ...(knowledgePoints.length ? [] : secondaryKnowledgePoints),
+    ];
 
     const explicitPmScore = scoreTerms(searchable, PM_ARTIFACT_TERMS.slice(0, 4));
     const pmArtifactScore = scoreTerms(searchable, PM_ARTIFACT_TERMS.slice(4));
@@ -858,6 +1232,7 @@ const GraphCommunitiesCore = (() => {
       context,
       topics,
       knowledgePoints,
+      secondaryKnowledgePoints,
       pmRelated,
       pmKind,
       pmDomain,
@@ -867,8 +1242,8 @@ const GraphCommunitiesCore = (() => {
     };
   }
 
-  function extractKnowledgeProfile(document) {
-    const taxonomy = inferDocumentTaxonomy(document);
+  function extractKnowledgeProfile(document, options = {}) {
+    const taxonomy = inferDocumentTaxonomy(document, options);
     const searchable = contentTextForKnowledge(document);
     return {
       context: taxonomy.context,
@@ -885,51 +1260,44 @@ const GraphCommunitiesCore = (() => {
         score: Number(topic.score.toFixed(2)),
         evidenceTerms: topic.terms.filter((term) => searchable.includes(term)).slice(0, 8),
       })),
+      secondaryKnowledgePoints: taxonomy.secondaryKnowledgePoints.map((topic) => ({
+        key: topic.key,
+        label: topic.label,
+        domain: topic.domain,
+        score: Number(topic.score.toFixed(2)),
+        evidenceTerms: topic.terms.filter((term) => searchable.includes(term)).slice(0, 8),
+      })),
     };
   }
 
-  function deriveTopicAssignments(documents, directoryProjects) {
+  function deriveTopicAssignments(documents, directoryProjects, options = {}) {
     const assignments = new Map();
     const counts = new Map();
     for (const document of documents.values()) {
-      const taxonomy = inferDocumentTaxonomy(document);
+      const taxonomy = inferDocumentTaxonomy(document, options);
       const directoryProject = directoryProjects.get(document.id);
       const primary = taxonomy.knowledgePoints[0];
+      const relationshipTopicKeys = [
+        ...taxonomy.knowledgePoints,
+        ...taxonomy.secondaryKnowledgePoints,
+      ].map((topic) => topic.key);
       let key;
       let label;
       let weightScale = 1;
       let communityWeight = 1;
 
-      const workCollection = desktopWorkCollection(document.path);
-      const childCompanionContext = taxonomy.topics.some((topic) => topic.key === 'child-companion') ||
-        Boolean(workCollection);
-      const pmSummaryDomain = detectPmSummaryDomain(document);
-      const pmRepresentativeDomain = detectPmRepresentativeDomain(document);
-      if (pmSummaryDomain) {
-        key = `@topic:pm-summary:${pmSummaryDomain.key}`;
-        label = pmSummaryDomain.label;
-      } else if (pmRepresentativeDomain) {
-        key = `@topic:pm-summary:${pmRepresentativeDomain.key}`;
-        label = pmRepresentativeDomain.label;
-        weightScale = 0.28;
-        communityWeight = 0.22;
-      } else if (taxonomy.pmRelated) {
+      if (taxonomy.pmRelated) {
         const prompts = taxonomy.pmKind === 'prompt';
         key = prompts ? '@topic:pm-prompts' : `@topic:pm-skills:${taxonomy.pmDomain.key}`;
         label = prompts ? 'PM Prompts' : taxonomy.pmDomain.label;
         weightScale = 0.18;
         communityWeight = 0.12;
       } else if (primary) {
-        key = childCompanionContext
-          ? `@topic:project-knowledge:${primary.key}`
-          : `@knowledge:${primary.key}`;
+        key = `@knowledge:${primary.key}`;
         label = primary.label;
       } else if (taxonomy.context === 'academic') {
         key = '@knowledge:academic-research';
         label = '学术研究方法';
-      } else if (workCollection) {
-        key = workCollection.key;
-        label = workCollection.label;
       } else if (directoryProject && !isGenericLabel(directoryProject.label)) {
         key = directoryProject.key;
         label = directoryProject.label;
@@ -938,38 +1306,47 @@ const GraphCommunitiesCore = (() => {
         label = humanizeSegment(document.title) || 'Unclassified';
       }
 
-      const parent = pmSummaryDomain || pmRepresentativeDomain
-        ? PM_SUMMARY_PARENT
-        : taxonomy.pmRelated
-          ? null
-          : childCompanionContext
-            ? CHILD_COMPANION_PARENT
-            : null;
+      const parentTheme = primary && !taxonomy.pmRelated
+        ? customTheme(primary.themeKey || primary.themeLabel || primary.domain, options) ||
+          semanticThemeForTopic(primary)
+        : null;
 
       counts.set(key, (counts.get(key) || 0) + 1);
       assignments.set(document.id, {
         key,
         label,
-        parentKey: parent?.key,
-        parentLabel: parent?.label,
-        parentColor: parent?.color,
+        parentKey: parentTheme?.key,
+        parentLabel: parentTheme?.label,
+        parentColor: parentTheme?.color,
         size: 1,
         weightScale,
         communityWeight,
-        pmRepresentative: Boolean(pmRepresentativeDomain),
         context: taxonomy.context,
-        contextTags: pmSummaryDomain || pmRepresentativeDomain
-          ? ['product-management', 'summary']
-          : taxonomy.pmRelated ? ['product-management'] : [taxonomy.context],
-        topicTags: pmSummaryDomain || pmRepresentativeDomain
-          ? ['product-management', 'summary', (pmSummaryDomain || pmRepresentativeDomain).key]
-          : taxonomy.pmRelated
+        contextTags: taxonomy.pmRelated ? ['product-management'] : [taxonomy.context],
+        topicTags: taxonomy.pmRelated
           ? ['product-management', taxonomy.pmKind, taxonomy.pmDomain.key]
-          : taxonomy.knowledgePoints.slice(0, 6).map((topic) => topic.key),
+          : [...new Set(relationshipTopicKeys)].slice(0, 6),
         knowledgePoints: taxonomy.knowledgePoints.slice(0, 8).map((topic) => ({
           key: topic.key,
           label: topic.label,
           domain: topic.domain,
+          themeKey: topic.themeKey || semanticThemeForTopic(topic)?.key,
+          themeLabel: topic.themeLabel || semanticThemeForTopic(topic)?.label || topic.domain,
+          themeColor: topic.themeColor || semanticThemeForTopic(topic)?.color,
+          color: topic.color || null,
+          score: Number(topic.score.toFixed(2)),
+          evidenceTerms: topic.terms.filter((term) =>
+            contentTextForKnowledge(document).includes(term)
+          ).slice(0, 6),
+        })),
+        secondaryKnowledgePoints: taxonomy.secondaryKnowledgePoints.slice(0, 7).map((topic) => ({
+          key: topic.key,
+          label: topic.label,
+          domain: topic.domain,
+          themeKey: topic.themeKey || semanticThemeForTopic(topic)?.key,
+          themeLabel: topic.themeLabel || semanticThemeForTopic(topic)?.label || topic.domain,
+          themeColor: topic.themeColor || semanticThemeForTopic(topic)?.color,
+          color: topic.color || null,
           score: Number(topic.score.toFixed(2)),
           evidenceTerms: topic.terms.filter((term) =>
             contentTextForKnowledge(document).includes(term)
@@ -991,11 +1368,6 @@ const GraphCommunitiesCore = (() => {
       const document = documents.get(id) || {};
       const canonicalKey = pmCanonicalKey(document);
       assignment.canonicalKey = canonicalKey;
-      if (assignment.key.startsWith('@topic:pm-summary:')) {
-        assignment.displayWeight = assignment.pmRepresentative ? 0.72 : 1;
-        assignment.communityWeight = assignment.pmRepresentative ? 0.22 : 1;
-        continue;
-      }
       if (assignment.key === '@topic:pm-prompts') {
         assignment.displayWeight = 0.82;
         continue;
@@ -1096,6 +1468,7 @@ const GraphCommunitiesCore = (() => {
       document.parentLabel = project?.parentLabel;
       document.parentColor = project?.parentColor;
       document.knowledgePoints = project?.knowledgePoints || [];
+      document.secondaryKnowledgePoints = project?.secondaryKnowledgePoints || [];
       document.labelTerms = feature && feature.labelTerms;
       document.priorityMatches = feature && feature.priorityMatches;
       document.contextTags = project && project.contextTags;
@@ -1482,14 +1855,7 @@ const GraphCommunitiesCore = (() => {
       projectGroups.get(key).nodes.push(node);
     }
     const ranked = [...projectGroups.values()]
-      .filter((group) =>
-        group.nodes.length >= minCommunitySize ||
-        group.key.startsWith('@topic:pm-summary:') ||
-        (
-          group.parentKey === CHILD_COMPANION_PARENT.key &&
-          group.nodes.length >= 2
-        )
-      )
+      .filter((group) => group.nodes.length >= minCommunitySize)
       .map((group) => ({
         ...group,
         effectiveSize: group.nodes.reduce(
@@ -1503,30 +1869,13 @@ const GraphCommunitiesCore = (() => {
     if (!ranked.length) return new Map([...graph.keys()].map((node) => [node, -1]));
 
     const kept = ranked.filter((group) =>
-      /^@topic:pm-(?:summary(?::[^:]+)?|skills(?::[^:]+)?|prompts)$/u.test(group.key)
-    );
+      /^@topic:pm-(?:skills(?::[^:]+)?|prompts)$/u.test(group.key)
+    ).slice(0, maxCommunities);
     const externalGroupCount = ranked.filter((group) => /^@knowledge:/u.test(group.key)).length;
     const externalReserve = Math.min(
       externalGroupCount,
       Math.max(3, Math.round(maxCommunities * 0.34))
     );
-    const childBudget = Math.max(0, maxCommunities - kept.length - externalReserve);
-    let keptProjectKnowledge = 0;
-    const addChildGroup = (group) => {
-      if (!group || kept.includes(group) || kept.length >= maxCommunities ||
-          keptProjectKnowledge >= childBudget) return;
-      kept.push(group);
-      keptProjectKnowledge += 1;
-    };
-    for (const key of CORE_CHILD_KNOWLEDGE_KEYS) {
-      addChildGroup(ranked.find(
-        (group) => group.key === `@topic:project-knowledge:${key}`
-      ));
-    }
-    for (const group of ranked) {
-      if (keptProjectKnowledge >= childBudget) break;
-      if (group.parentKey === CHILD_COMPANION_PARENT.key) addChildGroup(group);
-    }
     const keepDiverseGroups = (pattern, limit) => {
       let added = 0;
       for (const group of ranked) {
@@ -1628,12 +1977,9 @@ const GraphCommunitiesCore = (() => {
     for (const node of nodes) {
       const document = documents.get(node) || {};
       if (document.projectLabel && !isGenericLabel(document.projectLabel)) {
-        const projectContribution = document.parentKey === CHILD_COMPANION_PARENT.key
-          ? 1.25
-          : 1;
         projectScores.set(
           document.projectLabel,
-          (projectScores.get(document.projectLabel) || 0) + projectContribution
+          (projectScores.get(document.projectLabel) || 0) + 1
         );
       }
       for (const keyword of document.priorityMatches || []) {
@@ -1740,6 +2086,27 @@ const GraphCommunitiesCore = (() => {
     return current;
   }
 
+  function rgbIntToHsl(color) {
+    const red = ((color >> 16) & 0xff) / 255;
+    const green = ((color >> 8) & 0xff) / 255;
+    const blue = (color & 0xff) / 255;
+    const maximum = Math.max(red, green, blue);
+    const minimum = Math.min(red, green, blue);
+    const delta = maximum - minimum;
+    let hue = 0;
+    if (delta > 0) {
+      if (maximum === red) hue = 60 * (((green - blue) / delta) % 6);
+      else if (maximum === green) hue = 60 * (((blue - red) / delta) + 2);
+      else hue = 60 * (((red - green) / delta) + 4);
+    }
+    if (hue < 0) hue += 360;
+    const lightness = (maximum + minimum) / 2;
+    const saturation = delta === 0
+      ? 0
+      : delta / (1 - Math.abs(2 * lightness - 1));
+    return { h: hue, s: saturation, l: lightness };
+  }
+
   function hslToRgbInt(hue, saturation = 0.72, lightness = 0.6) {
     const h = ((hue % 360) + 360) % 360 / 360;
     const s = clamp(saturation, 0, 1);
@@ -1832,54 +2199,17 @@ const GraphCommunitiesCore = (() => {
     );
   }
 
-  function knowledgePointColor(value, parentKey = null) {
-    const rule = knowledgeRule(value);
+  function knowledgePointColor(value, parentKey = null, options = {}) {
+    const rule = topicFromValue(value, options) || knowledgeRule(value);
     if (!rule) return null;
-    const styles = parentKey === CHILD_COMPANION_PARENT.key
-      ? CHILD_COMPANION_DOMAIN_STYLES
-      : KNOWLEDGE_DOMAIN_STYLES;
-    const style = styles.get(rule.domain);
-    if (!style) return null;
-    const peers = CONTENT_TOPIC_RULES.filter(
-      (candidate) => !candidate.contextOnly && candidate.domain === rule.domain
-    );
-    const index = Math.max(0, peers.findIndex((candidate) => candidate.key === rule.key));
-    const offset = peers.length <= 1
-      ? 0
-      : ((index / (peers.length - 1)) - 0.5) * style.spread;
-    const toneOffsets = [0.07, -0.045, 0.025, -0.075, 0.055, -0.015];
-    const saturationOffsets = [0.04, -0.06, 0.08, -0.02, 0.02];
-    const maximumSaturation = parentKey === CHILD_COMPANION_PARENT.key ? 0.94 : 0.88;
-    return hslToRgbInt(
-      style.hue + offset,
-      clamp(
-        style.saturation + saturationOffsets[index % saturationOffsets.length],
-        0.58,
-        maximumSaturation
-      ),
-      clamp(style.lightness + toneOffsets[index % toneOffsets.length], 0.38, 0.64)
-    );
+    return topicSemanticColor(rule, options);
   }
 
-  function documentKnowledgeColor(document = {}) {
-    const points = (document.knowledgePoints || []).slice(0, 6);
-    if (!points.length) return null;
-    const colors = [];
-    const weights = [];
-    const primaryScore = Math.max(1, Number(points[0]?.score) || 1);
-    for (let index = 0; index < points.length; index += 1) {
-      const point = points[index];
-      const color = knowledgePointColor(point.key || point.label, document.parentKey);
-      if (color == null) continue;
-      colors.push(color);
-      if (index === 0) {
-        weights.push(1);
-      } else {
-        const relativeScore = clamp((Number(point.score) || 0) / primaryScore, 0.12, 1);
-        weights.push((0.24 * relativeScore) / Math.sqrt(index));
-      }
-    }
-    return colors.length ? blendRgbInts(colors, weights) : null;
+  function documentKnowledgeColor(document = {}, options = {}) {
+    const primary = (document.knowledgePoints || [])[0];
+    if (!primary) return null;
+    return topicSemanticColor(primary, options) ??
+      knowledgePointColor(primary.key || primary.label, null, options);
   }
 
   function nodesByCommunity(assignments) {
@@ -1914,31 +2244,9 @@ const GraphCommunitiesCore = (() => {
     return value && count > nodes.length / 2 ? value : undefined;
   }
 
-  function childCompanionColor(label, index = 0) {
-    if (CHILD_COMPANION_COLORS.has(label)) {
-      return hexToRgbInt(CHILD_COMPANION_COLORS.get(label));
-    }
-    const fallback = ['#E54866', '#D9468D', '#C23B78', '#F05B78', '#B83F88'];
-    return hexToRgbInt(fallback[index % fallback.length]);
-  }
-
-  function pmSummaryColor(label, index = 0) {
-    if (PM_SUMMARY_COLORS.has(label)) return hexToRgbInt(PM_SUMMARY_COLORS.get(label));
-    const fallback = ['#3B82F6', '#6366F1', '#06B6D4', '#8B5CF6'];
-    return hexToRgbInt(fallback[index % fallback.length]);
-  }
-
   function generateCommunityPalette(assignments, hubs, documents, options = {}) {
     const communities = nodesByCommunity(assignments);
-    const hasChildCompanionProject = [...communities.values()].some((nodes) =>
-      dominantHierarchyValue(nodes, documents, 'parentKey') === CHILD_COMPANION_PARENT.key
-    );
-    const fallbackPalette = hasChildCompanionProject
-      ? ['#5AA9FF', '#6FE39A', '#C58CFF', '#FFC857', '#46D7D0', '#738CFF', '#A8D65E', '#FF9F43', '#6FD0FF', '#14B8A6', '#8B5CF6', '#EAB308']
-      : DEFAULT_PALETTE;
-    const palette = generatePalette(hubs.size, options.palette || fallbackPalette);
-    let projectIndex = 0;
-    let pmSummaryIndex = 0;
+    const palette = generatePalette(hubs.size, options.palette || DEFAULT_PALETTE);
     for (const community of hubs.keys()) {
       const nodes = communities.get(community) || [];
       const parentKey = dominantHierarchyValue(nodes, documents, 'parentKey');
@@ -1946,10 +2254,6 @@ const GraphCommunitiesCore = (() => {
       const semanticColor = knowledgePointColor(label, parentKey);
       if (semanticColor != null) {
         palette[community] = semanticColor;
-        projectIndex += 1;
-      } else if (parentKey === PM_SUMMARY_PARENT.key) {
-        palette[community] = pmSummaryColor(label, pmSummaryIndex);
-        pmSummaryIndex += 1;
       }
     }
     return palette;
@@ -1965,14 +2269,17 @@ const GraphCommunitiesCore = (() => {
     const hubSet = new Set(hubs.values());
     const colors = new Map();
     for (const node of graph.keys()) {
+      if (options.semanticMode && documents.has(node)) {
+        const semanticColor = documentKnowledgeColor(documents.get(node), options);
+        colors.set(node, semanticColor == null ? neutral : semanticColor);
+        continue;
+      }
       const vector = affinities.get(node) || [];
       if (!vector.length || vector.every((value) => value <= 0)) {
         colors.set(node, neutral);
         continue;
       }
       let mixed = blendRgbInts(palette, vector);
-      const semanticColor = documentKnowledgeColor(documents.get(node));
-      if (semanticColor != null) mixed = mixRgb(mixed, semanticColor, 0.28);
       if (hubSet.has(node)) {
         colors.set(node, palette[assignments.get(node)] || mixed);
         continue;
@@ -1991,11 +2298,113 @@ const GraphCommunitiesCore = (() => {
     return { colors, palette };
   }
 
+  function naturalBreakRecommendation(themes) {
+    if (themes.length <= 1) return new Set(themes.map((theme) => theme.key));
+    const ranked = [...themes].sort((a, b) => b.size - a.size || a.key.localeCompare(b.key));
+    let bestIndex = ranked.length - 1;
+    let bestRelativeDrop = -1;
+    for (let index = 0; index < ranked.length - 1; index += 1) {
+      const current = ranked[index].percentage;
+      const next = ranked[index + 1].percentage;
+      const relativeDrop = (current - next) / Math.max(current, Number.EPSILON);
+      if (relativeDrop > bestRelativeDrop) {
+        bestRelativeDrop = relativeDrop;
+        bestIndex = index;
+      }
+    }
+    return new Set(ranked.slice(0, bestIndex + 1).map((theme) => theme.key));
+  }
+
+  function buildSemanticLegend(documents, options = {}) {
+    const total = documents.size;
+    const themeMap = new Map();
+    const topicMap = new Map();
+    for (const [id, document] of documents.entries()) {
+      const primary = (document.knowledgePoints || [])[0];
+      const theme = primary
+        ? customTheme(primary.themeKey || primary.themeLabel || primary.domain, options) ||
+          semanticThemeForTopic(primary)
+        : null;
+      const themeKey = theme?.key || primary?.themeKey || '@theme:unclassified';
+      const themeLabel = theme?.label || primary?.themeLabel || primary?.domain || '待分类';
+      const themeColor = theme?.color || primary?.themeColor || options.neutralColor || '#8B92A1';
+      const topicKey = primary?.key || '@topic:unclassified';
+      const topicLabel = primary?.label || '待分类';
+      const topicColor = primary
+        ? documentKnowledgeColor(document, options)
+        : mixRgb(hexToRgbInt(themeColor), 0xffffff, 0.18);
+      if (!themeMap.has(themeKey)) {
+        themeMap.set(themeKey, {
+          key: themeKey,
+          label: themeLabel,
+          color: hexToRgbInt(themeColor),
+          colorHex: rgbIntToHex(hexToRgbInt(themeColor)),
+          size: 0,
+          visibleSize: 0,
+          topicKeys: [],
+          communityIds: [],
+        });
+      }
+      if (!topicMap.has(topicKey)) {
+        topicMap.set(topicKey, {
+          id: topicKey,
+          key: topicKey,
+          label: topicLabel,
+          parentKey: themeKey,
+          parentLabel: themeLabel,
+          color: topicColor,
+          colorHex: rgbIntToHex(topicColor),
+          size: 0,
+          visibleSize: 0,
+          nodes: [],
+          keywords: [],
+          hub: id,
+        });
+        themeMap.get(themeKey).topicKeys.push(topicKey);
+        themeMap.get(themeKey).communityIds.push(topicKey);
+      }
+      themeMap.get(themeKey).size += 1;
+      themeMap.get(themeKey).visibleSize += 1;
+      const topic = topicMap.get(topicKey);
+      topic.size += 1;
+      topic.visibleSize += 1;
+      topic.nodes.push(id);
+    }
+    const themes = [...themeMap.values()]
+      .map((theme) => ({
+        ...theme,
+        percentage: total ? (theme.size / total) * 100 : 0,
+      }))
+      .sort((a, b) => b.size - a.size || a.label.localeCompare(b.label));
+    const recommended = naturalBreakRecommendation(
+      themes.filter((theme) => theme.key !== '@theme:unclassified')
+    );
+    for (const theme of themes) theme.recommended = recommended.has(theme.key);
+    const themeOrder = new Map(themes.map((theme, index) => [theme.key, index]));
+    const topics = [...topicMap.values()]
+      .map((topic) => ({
+        ...topic,
+        percentage: total ? (topic.size / total) * 100 : 0,
+      }))
+      .sort((a, b) =>
+        (themeOrder.get(a.parentKey) || 0) - (themeOrder.get(b.parentKey) || 0) ||
+        b.size - a.size ||
+        a.label.localeCompare(b.label)
+      );
+    const assignments = new Map();
+    for (const topic of topics) {
+      for (const id of topic.nodes) assignments.set(id, topic.key);
+    }
+    return { themes, topics, assignments, total };
+  }
+
   function analyzeGraph(graph, options = {}) {
+    const semanticMode = options.documents instanceof Map ||
+      (Array.isArray(options.documents) && options.documents.length > 0);
     const documents = options.documents instanceof Map
       ? options.documents
       : normalizeDocumentInput(options.documents || [], graph);
-    const analysisOptions = { ...options, documents };
+    const analysisOptions = { ...options, documents, semanticMode };
     const rawPartition = louvainPartition(graph, analysisOptions);
     const assignments = consolidateCommunities(graph, rawPartition, analysisOptions);
     const hubs = chooseHubs(graph, assignments, documents);
@@ -2007,6 +2416,7 @@ const GraphCommunitiesCore = (() => {
       options
     );
     const { colors, palette } = colorize(graph, assignments, hubs, affinities, analysisOptions);
+    const semantic = buildSemanticLegend(documents, analysisOptions);
     const communities = nodesByCommunity(assignments);
     const usedLabels = new Map();
     const usedFinalLabels = new Set();
@@ -2060,7 +2470,7 @@ const GraphCommunitiesCore = (() => {
         parentMap.set(cluster.parentKey, {
           key: cluster.parentKey,
           label: cluster.parentLabel,
-          colorHex: cluster.parentColorHex || '#DC2626',
+          colorHex: cluster.parentColorHex || '#64748B',
           size: 0,
           visibleSize: 0,
           communityIds: [],
@@ -2079,7 +2489,15 @@ const GraphCommunitiesCore = (() => {
       palette,
       clusters,
       parents: [...parentMap.values()],
-      neutralCount: [...assignments.values()].filter((community) => community < 0).length,
+      semanticThemes: semantic.themes,
+      semanticTopics: semantic.topics,
+      semanticAssignments: semantic.assignments,
+      effectiveCount: semantic.total,
+      neutralCount: semantic.total > 0
+        ? [...semantic.assignments.values()].filter(
+          (topic) => topic === '@topic:unclassified'
+        ).length
+        : [...assignments.values()].filter((community) => community < 0).length,
       nodeCount: graph.size,
       edgeWeight: totalEdgeWeight(graph),
     };
@@ -2108,9 +2526,11 @@ const GraphCommunitiesCore = (() => {
     CONTENT_TOPIC_RULES,
     DEFAULT_PALETTE,
     PM_DOMAIN_RULES,
+    SEMANTIC_THEME_DEFINITIONS,
     addUndirectedEdge,
     analyzeGraph,
     blendRgbInts,
+    buildSemanticLegend,
     buildHybridGraph,
     buildWeightedGraph,
     chooseHubs,
@@ -2119,6 +2539,8 @@ const GraphCommunitiesCore = (() => {
     createGraph,
     ensureNode,
     extractKnowledgeProfile,
+    filterEffectiveDocuments,
+    graphExclusionReason,
     graphFromResolvedLinks,
     hexToRgbInt,
     humanizeSegment,
@@ -2126,6 +2548,8 @@ const GraphCommunitiesCore = (() => {
     knowledgePointColor,
     louvainPartition,
     mixRgb,
+    naturalBreakRecommendation,
+    normalizeTopicManifest,
     propagateAffinities,
     parsePriorityKeywords,
     rgbIntToHex,
@@ -2153,7 +2577,7 @@ const DEFAULT_SETTINGS = {
   maxCommunities: 24,
   minCommunitySize: 2,
   topicAware: true,
-  priorityKeywords: '儿童发展, 教育学, 心理学, 语言发展, 习惯养成, 运动发展, AI, LLM, ASR, RAG, Agent',
+  priorityKeywords: '',
   projectWeight: 5,
   semanticWeight: 1.4,
   linkWeight: 0.65,
@@ -2187,6 +2611,14 @@ class GraphCommunitiesPlugin extends Plugin {
     this.rendererNodeLabelCache = new Map();
     this.documentContentCache = new Map();
     this.documents = new Map();
+    this.excludedNodeIds = new Set();
+    this.exclusionReasons = new Map();
+    this.topicManifest = null;
+    this.topicManifestState = 'built-in fallback';
+    this.manifestWarningShown = false;
+    this.gradientTextureCache = new Map();
+    this.gradientLineRecords = new Map();
+    this.rendererNodeVisibilityCache = new Map();
     this.recomputeGeneration = 0;
     this.statusBar = this.addStatusBarItem();
     this.statusBar.setText('Graph Communities: waiting');
@@ -2258,10 +2690,11 @@ class GraphCommunitiesPlugin extends Plugin {
 
   async buildGraph() {
     const files = this.app.vault.getMarkdownFiles();
-    const linkGraph = core.graphFromResolvedLinks(
-      this.app.metadataCache.resolvedLinks || {},
-      files.map((file) => file.path)
-    );
+    const {
+      topicManifest,
+      topicManifestState,
+      topicManifestWarning,
+    } = await this.readTopicManifest();
     const activePaths = new Set(files.map((file) => file.path));
     for (const cachedPath of this.documentContentCache.keys()) {
       if (!activePaths.has(cachedPath)) this.documentContentCache.delete(cachedPath);
@@ -2290,11 +2723,26 @@ class GraphCommunitiesPlugin extends Plugin {
           tags,
           headings: (cache.headings || []).map((heading) => heading.heading),
           content: await this.readDocumentContent(file),
+          frontmatter,
+          graphPrimaryTheme: frontmatter.graph_primary_theme,
+          graphPrimaryTopic: frontmatter.graph_primary_topic,
+          graphSecondaryTopics: toStringArray(frontmatter.graph_secondary_topics),
+          graphExclude: frontmatter.graph_exclude,
+          graphExcludeReason: frontmatter.graph_exclude_reason,
         };
       }));
       documents.push(...batch);
     }
-    return core.buildHybridGraph(linkGraph, documents, {
+    const filtered = core.filterEffectiveDocuments(documents);
+    const exclusionReasons = filtered.excluded;
+    const excludedNodeIds = new Set(filtered.excluded.keys());
+    const effectiveIds = filtered.effective.map((document) => document.id);
+    const linkGraph = core.graphFromResolvedLinks(
+      this.app.metadataCache.resolvedLinks || {},
+      effectiveIds,
+      { restrictToNodeIds: true }
+    );
+    const model = core.buildHybridGraph(linkGraph, filtered.effective, {
       priorityKeywords: this.settings.priorityKeywords,
       linkWeight: this.settings.topicAware ? this.settings.linkWeight : 1,
       projectWeight: this.settings.topicAware ? this.settings.projectWeight : 0,
@@ -2303,7 +2751,63 @@ class GraphCommunitiesPlugin extends Plugin {
         ? this.settings.navigationLinkPenalty
         : 1,
       projectMaxSize: this.settings.projectMaxSize,
+      topicManifest,
     });
+    return {
+      ...model,
+      topicManifest,
+      topicManifestState,
+      topicManifestWarning,
+      exclusionReasons,
+      excludedNodeIds,
+    };
+  }
+
+  async readTopicManifest() {
+    const manifestPath = '.codex/graph/topic-manifest.json';
+    try {
+      const adapter = this.app.vault.adapter;
+      let source = null;
+      if (
+        adapter &&
+        typeof adapter.exists === 'function' &&
+        typeof adapter.read === 'function'
+      ) {
+        if (await adapter.exists(manifestPath)) {
+          source = await adapter.read(manifestPath);
+        }
+      } else {
+        const file = typeof this.app.vault.getAbstractFileByPath === 'function'
+          ? this.app.vault.getAbstractFileByPath(manifestPath)
+          : null;
+        if (file) {
+          source = typeof this.app.vault.cachedRead === 'function'
+            ? await this.app.vault.cachedRead(file)
+            : await this.app.vault.read(file);
+        }
+      }
+      if (source == null) {
+        return {
+          topicManifest: null,
+          topicManifestState: 'built-in fallback',
+          topicManifestWarning: null,
+        };
+      }
+      const manifest = core.normalizeTopicManifest(JSON.parse(source));
+      if (!manifest.valid) throw new Error(manifest.error || 'invalid schema');
+      return {
+        topicManifest: manifest,
+        topicManifestState: 'portable manifest',
+        topicManifestWarning: null,
+      };
+    } catch (error) {
+      return {
+        topicManifest: null,
+        topicManifestState: `manifest invalid · ${error.message || 'parse error'}`,
+        topicManifestWarning:
+          'Graph Communities: topic manifest is invalid; using built-in topics',
+      };
+    }
   }
 
   async readDocumentContent(file) {
@@ -2313,7 +2817,9 @@ class GraphCommunitiesPlugin extends Plugin {
     if (cached && cached.revision === revision) return cached.content;
     try {
       const source = await this.app.vault.cachedRead(file);
-      const content = String(source || '').slice(0, 24000);
+      // Exclusion, duplicate detection, and semantic classification all use
+      // the complete local file so the plugin and portable curator agree.
+      const content = String(source || '');
       this.documentContentCache.set(file.path, { revision, content });
       return content;
     } catch {
@@ -2330,8 +2836,7 @@ class GraphCommunitiesPlugin extends Plugin {
     this.statusBar.setText('Graph Communities: analyzing note content');
     const model = await this.buildGraph();
     if (generation !== this.recomputeGeneration) return;
-    this.documents = model.documents;
-    this.analysis = core.analyzeGraph(model.graph, {
+    const analysis = core.analyzeGraph(model.graph, {
       resolution: this.settings.resolution,
       maxCommunities: this.settings.maxCommunities,
       minCommunitySize: this.settings.minCommunitySize,
@@ -2343,7 +2848,21 @@ class GraphCommunitiesPlugin extends Plugin {
       documents: model.documents,
       priorityKeywords: model.priorityKeywords,
       projectFirst: this.settings.topicAware,
+      topicManifest: model.topicManifest,
     });
+
+    // Publish one generation's derived state together only after it wins the
+    // generation check. A slower, older recompute must remain side-effect free.
+    this.topicManifest = model.topicManifest;
+    this.topicManifestState = model.topicManifestState;
+    this.exclusionReasons = model.exclusionReasons;
+    this.excludedNodeIds = model.excludedNodeIds;
+    this.documents = model.documents;
+    this.analysis = analysis;
+    if (model.topicManifestWarning && !this.manifestWarningShown) {
+      this.manifestWarningShown = true;
+      new Notice(model.topicManifestWarning);
+    }
     this.hoveredCommunity = null;
     this.hoveredNodeId = null;
     this.restoreFocusAfterRecompute();
@@ -2354,15 +2873,15 @@ class GraphCommunitiesPlugin extends Plugin {
   restoreFocusAfterRecompute() {
     if (!this.analysis) return;
     if (this.focusSource === 'node' && this.focusedNodeId) {
-      const community = this.analysis.assignments.get(this.focusedNodeId);
-      if (community != null && community >= 0) {
+      const community = this.nodeCategory(this.focusedNodeId);
+      if (community != null) {
         this.focusedCommunity = community;
         this.focusedCommunityLabel = this.clusterLabel(community);
         return;
       }
     }
     if (this.focusSource === 'community' && this.focusedCommunityLabel) {
-      const cluster = this.analysis.clusters.find(
+      const cluster = this.legendClusters().find(
         (candidate) => candidate.label === this.focusedCommunityLabel
       );
       if (cluster) {
@@ -2372,7 +2891,7 @@ class GraphCommunitiesPlugin extends Plugin {
       }
     }
     if (this.focusSource === 'parent' && this.focusedParentLabel) {
-      const parent = this.analysis.parents.find(
+      const parent = this.legendParents().find(
         (candidate) => candidate.label === this.focusedParentLabel
       );
       if (parent) {
@@ -2385,9 +2904,28 @@ class GraphCommunitiesPlugin extends Plugin {
   }
 
   clusterForCommunity(community) {
-    return this.analysis && this.analysis.clusters.find(
+    return this.analysis && this.legendClusters().find(
       (candidate) => candidate.id === community
     );
+  }
+
+  legendClusters() {
+    return this.analysis?.semanticTopics?.length
+      ? this.analysis.semanticTopics
+      : this.analysis?.clusters || [];
+  }
+
+  legendParents() {
+    return this.analysis?.semanticThemes?.length
+      ? this.analysis.semanticThemes
+      : this.analysis?.parents || [];
+  }
+
+  nodeCategory(id) {
+    if (!this.analysis) return null;
+    return this.analysis.semanticAssignments?.get(id) ??
+      this.analysis.assignments.get(id) ??
+      null;
   }
 
   clusterLabel(community) {
@@ -2416,8 +2954,8 @@ class GraphCommunitiesPlugin extends Plugin {
 
   focusFromFile(file) {
     if (!this.analysis || !file || !file.path) return;
-    const community = this.analysis.assignments.get(file.path);
-    if (community == null || community < 0) {
+    const community = this.nodeCategory(file.path);
+    if (community == null) {
       if (this.focusSource === 'node') this.clearFocus();
       return;
     }
@@ -2433,8 +2971,8 @@ class GraphCommunitiesPlugin extends Plugin {
 
   previewFromGraphNode(id) {
     if (!this.analysis || typeof id !== 'string') return;
-    const community = this.analysis.assignments.get(id);
-    if (community == null || community < 0) {
+    const community = this.nodeCategory(id);
+    if (community == null) {
       this.clearGraphNodePreview();
       return;
     }
@@ -2515,7 +3053,7 @@ class GraphCommunitiesPlugin extends Plugin {
   updateStatusBar() {
     if (!this.statusBar || !this.analysis) return;
     if (this.focusedParentKey != null && this.hoveredCommunity == null) {
-      const parent = this.analysis.parents.find(
+      const parent = this.legendParents().find(
         (candidate) => candidate.key === this.focusedParentKey
       );
       if (parent) {
@@ -2527,7 +3065,7 @@ class GraphCommunitiesPlugin extends Plugin {
     }
     const activeCommunity = this.activeLegendCommunity();
     if (activeCommunity != null) {
-      const cluster = this.analysis.clusters.find(
+      const cluster = this.legendClusters().find(
         (candidate) => candidate.id === activeCommunity
       );
       if (cluster) {
@@ -2540,7 +3078,8 @@ class GraphCommunitiesPlugin extends Plugin {
       }
     }
     this.statusBar.setText(
-      `Graph Communities: ${this.analysis.clusters.length} clusters · ${this.analysis.nodeCount} notes`
+      `Graph Communities: ${this.legendParents().length} themes · ` +
+      `${this.analysis.effectiveCount ?? this.analysis.nodeCount} effective notes`
     );
   }
 
@@ -2667,6 +3206,285 @@ class GraphCommunitiesPlugin extends Plugin {
     this.rendererNodeLabelCache.clear();
   }
 
+  applyNodeVisibility(renderer, node, excluded) {
+    if (!node || node.type === 'tag') return false;
+    let cache = this.rendererNodeVisibilityCache.get(renderer);
+    let record = cache?.get(node);
+    if (!excluded) {
+      if (!record) return false;
+      this.restoreNodeVisibilityRecord(node, record);
+      cache.delete(node);
+      if (!cache.size) this.rendererNodeVisibilityCache.delete(renderer);
+      return true;
+    }
+    if (!record) {
+      if (!cache) {
+        cache = new Map();
+        this.rendererNodeVisibilityCache.set(renderer, cache);
+      }
+      const plugin = this;
+      record = {
+        visuals: new Map(),
+        hadOwnRender: Object.prototype.hasOwnProperty.call(node, 'render'),
+        originalRender: node.render,
+        wrapper: null,
+      };
+      if (typeof node.render === 'function') {
+        record.wrapper = function (...args) {
+          const result = record.originalRender.apply(this, args);
+          plugin.enforceNodeHidden(node, record);
+          return result;
+        };
+        node.render = record.wrapper;
+      }
+      cache.set(node, record);
+    } else if (
+      record.wrapper &&
+      node.render !== record.wrapper &&
+      typeof node.render === 'function'
+    ) {
+      record.hadOwnRender = Object.prototype.hasOwnProperty.call(node, 'render');
+      record.originalRender = node.render;
+      node.render = record.wrapper;
+    }
+    this.enforceNodeHidden(node, record);
+    return true;
+  }
+
+  nodeVisibilityTargets(node) {
+    return [...new Set([
+      node,
+      node.text,
+      node.circle,
+      node.sprite,
+      node.graphics,
+      node.highlight,
+    ].filter(Boolean))];
+  }
+
+  enforceNodeHidden(node, record) {
+    const visualProperties = ['visible', 'alpha', 'renderable'];
+    const interactionProperties = [
+      'eventMode',
+      'interactive',
+      'interactiveChildren',
+      'buttonMode',
+    ];
+    for (const target of this.nodeVisibilityTargets(node)) {
+      if (!record.visuals.has(target)) {
+        const properties = {};
+        for (const property of [...visualProperties, ...interactionProperties]) {
+          if (property in target) properties[property] = target[property];
+        }
+        record.visuals.set(target, properties);
+      }
+      if (target !== node) {
+        if ('visible' in target) target.visible = false;
+        if ('alpha' in target) target.alpha = 0;
+        if ('renderable' in target) target.renderable = false;
+      }
+      if ('eventMode' in target) target.eventMode = 'none';
+      if ('interactive' in target) target.interactive = false;
+      if ('interactiveChildren' in target) target.interactiveChildren = false;
+      if ('buttonMode' in target) target.buttonMode = false;
+    }
+  }
+
+  restoreNodeVisibilityRecord(node, record) {
+    if (record.wrapper && node.render === record.wrapper) {
+      if (record.hadOwnRender) node.render = record.originalRender;
+      else delete node.render;
+    }
+    for (const [target, properties] of record.visuals) {
+      for (const [property, value] of Object.entries(properties)) {
+        target[property] = value;
+      }
+    }
+  }
+
+  restoreAllNodeVisibility() {
+    for (const [renderer, cache] of this.rendererNodeVisibilityCache) {
+      let changed = false;
+      for (const [node, record] of cache) {
+        this.restoreNodeVisibilityRecord(node, record);
+        changed = true;
+      }
+      if (changed && typeof renderer.changed === 'function') renderer.changed();
+    }
+    this.rendererNodeVisibilityCache.clear();
+  }
+
+  gradientTexture(sourceColor, targetColor, ownerDocument, line) {
+    if (sourceColor === targetColor) return null;
+    const textureConstructor = line?.texture?.constructor;
+    if (!textureConstructor || typeof textureConstructor.from !== 'function') return null;
+    const key = `${sourceColor.toString(16)}>${targetColor.toString(16)}`;
+    const cached = this.gradientTextureCache.get(key);
+    if (cached?.textureConstructor === textureConstructor) return cached.texture;
+    try {
+      const canvas = ownerDocument.createElement('canvas');
+      canvas.width = 64;
+      canvas.height = 2;
+      const context = canvas.getContext('2d');
+      if (!context) return null;
+      const gradient = context.createLinearGradient(0, 0, canvas.width, 0);
+      gradient.addColorStop(0, core.rgbIntToHex(sourceColor));
+      gradient.addColorStop(1, core.rgbIntToHex(targetColor));
+      context.fillStyle = gradient;
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      const texture = textureConstructor.from(canvas);
+      if (!texture) return null;
+      this.gradientTextureCache.set(key, { texture, textureConstructor });
+      return texture;
+    } catch {
+      return null;
+    }
+  }
+
+  ensureGradientLineRecord(link) {
+    if (!link?.line) return null;
+    let record = this.gradientLineRecords.get(link);
+    if (record && record.line === link.line) {
+      if (
+        record.wrapper &&
+        link.render !== record.wrapper &&
+        typeof link.render === 'function'
+      ) {
+        record.hadOwnRender = Object.prototype.hasOwnProperty.call(link, 'render');
+        record.originalRender = link.render;
+        link.render = record.wrapper;
+      }
+      return record;
+    }
+    if (record) this.restoreGradientLine(link, record);
+    const plugin = this;
+    record = {
+      link,
+      line: link.line,
+      originalTexture: link.line.texture,
+      originalTint: link.line.tint,
+      originalAlpha: link.line.alpha,
+      hadOwnRender: Object.prototype.hasOwnProperty.call(link, 'render'),
+      originalRender: link.render,
+      wrapper: null,
+      spec: null,
+      hiddenDecorations: new Map(),
+    };
+    if (typeof record.originalRender === 'function') {
+      record.wrapper = function (...args) {
+        const result = record.originalRender.apply(this, args);
+        plugin.applyGradientLineSpec(record);
+        return result;
+      };
+      link.render = record.wrapper;
+    }
+    this.gradientLineRecords.set(link, record);
+    return record;
+  }
+
+  applyGradientLineSpec(record) {
+    const line = record?.line;
+    const spec = record?.spec;
+    if (!line || !spec) return;
+    line.texture = spec.texture ?? record.originalTexture;
+    line.tint = spec.tint;
+    line.alpha = spec.alpha;
+    if (spec.kind === 'hidden') this.enforceHiddenLinkDecorations(record);
+  }
+
+  setGradientLine(link, sourceColor, targetColor, alpha, ownerDocument) {
+    const record = this.ensureGradientLineRecord(link);
+    if (!record) return false;
+    this.restoreHiddenLinkDecorations(record);
+    const texture = this.gradientTexture(sourceColor, targetColor, ownerDocument, record.line);
+    record.spec = texture
+      ? { texture, tint: 0xffffff, alpha, kind: 'gradient' }
+      : {
+        texture: record.originalTexture,
+        tint: sourceColor === targetColor
+          ? sourceColor
+          : core.blendRgbInts([sourceColor, targetColor], [1, 1]),
+        alpha,
+        kind: sourceColor === targetColor ? 'solid' : 'fallback',
+      };
+    this.applyGradientLineSpec(record);
+    return true;
+  }
+
+  enforceHiddenLinkDecorations(record) {
+    const arrow = record.link?.arrow;
+    if (!arrow) return;
+    if (!record.hiddenDecorations.has(arrow)) {
+      const properties = {};
+      for (const property of [
+        'visible',
+        'alpha',
+        'renderable',
+        'eventMode',
+        'interactive',
+        'buttonMode',
+      ]) {
+        if (property in arrow) properties[property] = arrow[property];
+      }
+      record.hiddenDecorations.set(arrow, properties);
+    }
+    if ('visible' in arrow) arrow.visible = false;
+    if ('alpha' in arrow) arrow.alpha = 0;
+    if ('renderable' in arrow) arrow.renderable = false;
+    if ('eventMode' in arrow) arrow.eventMode = 'none';
+    if ('interactive' in arrow) arrow.interactive = false;
+    if ('buttonMode' in arrow) arrow.buttonMode = false;
+  }
+
+  restoreHiddenLinkDecorations(record) {
+    for (const [target, properties] of record.hiddenDecorations || []) {
+      for (const [property, value] of Object.entries(properties)) {
+        target[property] = value;
+      }
+    }
+    record.hiddenDecorations?.clear();
+  }
+
+  hideGradientLine(link) {
+    const record = this.ensureGradientLineRecord(link);
+    if (!record) return false;
+    record.spec = {
+      texture: record.originalTexture,
+      tint: record.originalTint,
+      alpha: 0,
+      kind: 'hidden',
+    };
+    this.applyGradientLineSpec(record);
+    return true;
+  }
+
+  restoreGradientLine(link, record = this.gradientLineRecords.get(link)) {
+    if (!record) return;
+    if (record.wrapper && link.render === record.wrapper) {
+      if (record.hadOwnRender) link.render = record.originalRender;
+      else delete link.render;
+    }
+    this.restoreHiddenLinkDecorations(record);
+    if (record.line) {
+      record.line.texture = record.originalTexture;
+      record.line.tint = record.originalTint;
+      record.line.alpha = record.originalAlpha;
+    }
+    this.gradientLineRecords.delete(link);
+  }
+
+  restoreGradientLines(destroyTextures = false) {
+    for (const [link, record] of [...this.gradientLineRecords.entries()]) {
+      this.restoreGradientLine(link, record);
+    }
+    if (destroyTextures) {
+      for (const { texture } of this.gradientTextureCache.values()) {
+        if (texture && typeof texture.destroy === 'function') texture.destroy(true);
+      }
+      this.gradientTextureCache.clear();
+    }
+  }
+
   paintAll(forceChanged = true) {
     if (!this.settings.enabled || !this.analysis) return;
     for (const leaf of this.graphLeaves()) this.paintLeaf(leaf, forceChanged);
@@ -2680,10 +3498,20 @@ class GraphCommunitiesPlugin extends Plugin {
     let changed = false;
 
     for (const node of renderer.nodes) {
+      const excluded = typeof node.id === 'string' && this.excludedNodeIds.has(node.id);
+      changed = this.applyNodeVisibility(renderer, node, excluded) || changed;
+      if (excluded) {
+        const neutral = core.hexToRgbInt(this.settings.neutralColor);
+        if (!node.color || node.color.rgb !== neutral || node.color.a !== 0) {
+          node.color = { a: 0, rgb: neutral };
+          changed = true;
+        }
+        continue;
+      }
       changed = this.applyNodeLabel(renderer, node) || changed;
       const rgb = this.analysis.colors.get(node.id);
       if (rgb == null) continue;
-      const community = this.analysis.assignments.get(node.id);
+      const community = this.nodeCategory(node.id);
       const isFocusedCommunity = this.communityMatchesFocus(community);
       const visibility = Math.max(
         0.01,
@@ -2729,7 +3557,17 @@ class GraphCommunitiesPlugin extends Plugin {
     if (Array.isArray(renderer.links)) {
       const defaultLine = renderer.colors && renderer.colors.line;
       for (const link of renderer.links) {
+        const sourceId = nodeId(link.source);
+        const targetId = nodeId(link.target);
+        if (
+          this.excludedNodeIds.has(sourceId) ||
+          this.excludedNodeIds.has(targetId)
+        ) {
+          changed = this.hideGradientLine(link) || changed;
+          continue;
+        }
         if (!this.settings.colorEdges) {
+          this.restoreGradientLine(link);
           if (!link.line) continue;
           const defaultTint = defaultLine && defaultLine.rgb;
           const defaultAlpha = defaultLine && defaultLine.a != null ? defaultLine.a : 1;
@@ -2743,17 +3581,14 @@ class GraphCommunitiesPlugin extends Plugin {
           }
           continue;
         }
-        const sourceId = nodeId(link.source);
-        const targetId = nodeId(link.target);
         const sourceColor = this.analysis.colors.get(sourceId);
         const targetColor = this.analysis.colors.get(targetId);
         if (sourceColor == null || targetColor == null || !link.line) continue;
         const tint = core.blendRgbInts([sourceColor, targetColor], [1, 1]);
-        const sourceCommunity = this.analysis.assignments.get(sourceId);
-        const targetCommunity = this.analysis.assignments.get(targetId);
+        const sourceCommunity = this.nodeCategory(sourceId);
+        const targetCommunity = this.nodeCategory(targetId);
         const sameCommunity =
           sourceCommunity != null &&
-          sourceCommunity >= 0 &&
           sourceCommunity === targetCommunity;
         let alpha = sameCommunity
           ? this.settings.sameCommunityEdgeOpacity
@@ -2803,14 +3638,16 @@ class GraphCommunitiesPlugin extends Plugin {
         if (!keepFocusedLinkVisible) {
           alpha *= Math.max(0.06, Math.sqrt(sourceVisibility * targetVisibility));
         }
-        if (link.line.tint !== displayTint) {
-          link.line.tint = displayTint;
-          changed = true;
-        }
-        if (link.line.alpha !== alpha) {
-          link.line.alpha = alpha;
-          changed = true;
-        }
+        const ownerDocument = view.containerEl?.ownerDocument ||
+          this.app.workspace.containerEl?.ownerDocument ||
+          globalThis.document;
+        changed = this.setGradientLine(
+          link,
+          sourceColor,
+          targetColor,
+          alpha,
+          ownerDocument
+        ) || changed;
       }
     }
 
@@ -2824,13 +3661,14 @@ class GraphCommunitiesPlugin extends Plugin {
   updateLegend(view) {
     const container = view && view.containerEl;
     if (!container) return;
+    const ownerDocument = container.ownerDocument || globalThis.document;
     let legend = container.querySelector('.graph-communities-legend');
     if (!this.settings.showLegend || !this.settings.enabled || !this.analysis) {
       if (legend) legend.remove();
       return;
     }
     if (!legend) {
-      legend = document.createElement('div');
+      legend = ownerDocument.createElement('div');
       legend.className = 'graph-communities-legend';
       container.appendChild(legend);
     }
@@ -2841,22 +3679,29 @@ class GraphCommunitiesPlugin extends Plugin {
       : ''
     }${this.hoveredCommunity != null ? ' is-previewing' : ''}`;
     legend.replaceChildren();
-    const title = document.createElement('div');
+    const title = ownerDocument.createElement('div');
     title.className = 'graph-communities-legend-title';
-    title.textContent = 'Knowledge communities';
+    title.textContent = 'Knowledge themes';
     legend.appendChild(title);
-    const hint = document.createElement('div');
+    const hint = ownerDocument.createElement('div');
     hint.className = 'graph-communities-legend-hint';
     const activeCommunity = this.activeLegendCommunity();
     const activeCluster = this.clusterForCommunity(activeCommunity);
     const activeLabel = activeCluster?.label || null;
     const activeParentKey = this.activeLegendParentKey();
-    const activeParent = this.analysis.parents.find(
+    const activeParent = this.legendParents().find(
       (candidate) => candidate.key === activeParentKey
     );
     const categoryPath = [activeParent?.label, activeLabel].filter(Boolean).join(' › ');
     const activeNodeId = this.hoveredNodeId || this.focusedNodeId;
-    const knowledgeLabels = (this.documents.get(activeNodeId)?.knowledgePoints || [])
+    const activeDocument = this.documents.get(activeNodeId) || {};
+    const knowledgeLabels = [
+      ...(activeDocument.knowledgePoints || []),
+      ...(activeDocument.secondaryKnowledgePoints || []),
+    ]
+      .filter((point, index, list) =>
+        list.findIndex((candidate) => candidate.key === point.key) === index
+      )
       .slice(0, 5)
       .map((point) => point.label)
       .join(' · ');
@@ -2870,7 +3715,10 @@ class GraphCommunitiesPlugin extends Plugin {
     } else if (activeLabel) {
       hint.textContent = `Focused category: ${categoryPath}`;
     } else {
-      hint.textContent = 'Click a project or subcategory to focus · click again to clear';
+      hint.textContent =
+        `Source: ${this.topicManifestState} · ` +
+        `${this.analysis.effectiveCount ?? this.analysis.nodeCount} effective · ` +
+        `${this.excludedNodeIds.size} excluded · click a theme or topic to focus`;
     }
     legend.appendChild(hint);
 
@@ -2889,7 +3737,7 @@ class GraphCommunitiesPlugin extends Plugin {
     };
 
     const appendClusterRow = (cluster, child = false) => {
-      const row = document.createElement('div');
+      const row = ownerDocument.createElement('div');
       const parentFocused = this.focusedParentKey != null &&
         cluster.parentKey === this.focusedParentKey;
       const isActive = cluster.id === activeCommunity || parentFocused;
@@ -2897,14 +3745,16 @@ class GraphCommunitiesPlugin extends Plugin {
         isActive ? ' is-active' : ''
       }`;
       row.setAttribute && row.setAttribute('aria-pressed', isActive ? 'true' : 'false');
-      const swatch = document.createElement('span');
+      row.setAttribute && row.setAttribute('aria-label', `Focus topic ${cluster.label}`);
+      const swatch = ownerDocument.createElement('span');
       swatch.className = 'graph-communities-swatch';
       swatch.style.backgroundColor = cluster.colorHex;
-      const label = document.createElement('span');
+      const label = ownerDocument.createElement('span');
       label.className = 'graph-communities-label';
-      label.textContent = cluster.visibleSize < cluster.size
-        ? `${cluster.label} (${cluster.visibleSize} shown / ${cluster.size})`
-        : `${cluster.label} (${cluster.size})`;
+      const percentage = Number.isFinite(cluster.percentage)
+        ? ` · ${cluster.percentage.toFixed(1)}%`
+        : '';
+      label.textContent = `${cluster.label} (${cluster.size}${percentage})`;
       label.title = [
         `Representative: ${qualifiedDisplayName(cluster.hub)}`,
         cluster.visibleSize < cluster.size
@@ -2914,7 +3764,7 @@ class GraphCommunitiesPlugin extends Plugin {
       ].filter(Boolean).join(' · ');
       row.append(swatch, label);
       if (isActive) {
-        const marker = document.createElement('span');
+        const marker = ownerDocument.createElement('span');
         marker.className = 'graph-communities-selection-marker';
         marker.textContent = this.hoveredCommunity != null
           ? 'NODE'
@@ -2930,21 +3780,24 @@ class GraphCommunitiesPlugin extends Plugin {
     };
 
     const appendParentRow = (parent) => {
-      const row = document.createElement('div');
+      const row = ownerDocument.createElement('div');
       const isActive = parent.key === activeParentKey;
       row.className = `graph-communities-parent-row${isActive ? ' is-active' : ''}`;
       row.setAttribute && row.setAttribute('aria-pressed', isActive ? 'true' : 'false');
-      const swatch = document.createElement('span');
+      row.setAttribute && row.setAttribute('aria-label', `Focus theme ${parent.label}`);
+      const swatch = ownerDocument.createElement('span');
       swatch.className = 'graph-communities-swatch is-parent';
       swatch.style.backgroundColor = parent.colorHex;
-      const label = document.createElement('span');
+      const label = ownerDocument.createElement('span');
       label.className = 'graph-communities-label';
-      label.textContent = parent.visibleSize < parent.size
-        ? `${parent.label} (${parent.visibleSize} shown / ${parent.size})`
-        : `${parent.label} (${parent.size})`;
+      const percentage = Number.isFinite(parent.percentage)
+        ? ` · ${parent.percentage.toFixed(1)}%`
+        : '';
+      label.textContent =
+        `${parent.label} (${parent.size}${percentage})${parent.recommended ? ' · main' : ''}`;
       row.append(swatch, label);
       if (isActive) {
-        const marker = document.createElement('span');
+        const marker = ownerDocument.createElement('span');
         marker.className = 'graph-communities-selection-marker';
         marker.textContent = this.focusSource === 'parent' ? 'SELECTED' : 'PROJECT';
         row.appendChild(marker);
@@ -2958,18 +3811,20 @@ class GraphCommunitiesPlugin extends Plugin {
     };
 
     const renderedParents = new Set();
-    for (const cluster of this.analysis.clusters) {
+    const legendClusters = this.legendClusters();
+    const legendParents = this.legendParents();
+    for (const cluster of legendClusters) {
       if (!cluster.parentKey) {
         appendClusterRow(cluster);
         continue;
       }
       if (renderedParents.has(cluster.parentKey)) continue;
       renderedParents.add(cluster.parentKey);
-      const parent = this.analysis.parents.find(
+      const parent = legendParents.find(
         (candidate) => candidate.key === cluster.parentKey
       );
       if (parent) appendParentRow(parent);
-      for (const childCluster of this.analysis.clusters.filter(
+      for (const childCluster of legendClusters.filter(
         (candidate) => candidate.parentKey === cluster.parentKey
       )) {
         appendClusterRow(childCluster, true);
@@ -2979,6 +3834,8 @@ class GraphCommunitiesPlugin extends Plugin {
 
   restoreAll() {
     this.restoreAllNodeLabels();
+    this.restoreAllNodeVisibility();
+    this.restoreGradientLines(false);
     for (const leaf of this.graphLeaves()) {
       const view = leaf && leaf.view;
       const renderer = view && view.renderer;
@@ -3003,6 +3860,7 @@ class GraphCommunitiesPlugin extends Plugin {
   onunload() {
     this.restoreRendererHooks();
     this.restoreAll();
+    this.restoreGradientLines(true);
   }
 }
 
@@ -3058,8 +3916,8 @@ class GraphCommunitiesSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName('Maximum communities')
-      .setDesc('Limits the number of visible primary knowledge points. Smaller concepts merge into their closest knowledge neighborhood.')
+      .setName('Internal clustering limit')
+      .setDesc('Limits only the relationship engine. The semantic theme legend always shows every active theme and topic.')
       .addSlider((slider) =>
         slider
           .setLimits(2, 36, 1)
@@ -3087,7 +3945,7 @@ class GraphCommunitiesSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Topic-aware clustering')
-      .setDesc('Infer academic/project context and topics from bounded local note content, then combine them with metadata and links.')
+      .setDesc('Infer academic/project context and topics from complete local note content, then combine them with metadata and links.')
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.topicAware).onChange(async (value) => {
           this.plugin.settings.topicAware = value;
@@ -3152,7 +4010,7 @@ class GraphCommunitiesSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Relationship blending')
-      .setDesc('How strongly neighboring communities influence a node color. Higher values create smoother transitions.')
+      .setDesc('How strongly neighboring notes influence internal community analysis. A note still displays only its primary topic color.')
       .addSlider((slider) =>
         slider
           .setLimits(0, 0.85, 0.05)
@@ -3166,7 +4024,7 @@ class GraphCommunitiesSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Blending distance')
-      .setDesc('Number of graph hops used to spread community colors.')
+      .setDesc('Number of graph hops used by internal relationship analysis.')
       .addSlider((slider) =>
         slider
           .setLimits(0, 10, 1)
@@ -3204,7 +4062,7 @@ class GraphCommunitiesSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Color connections')
-      .setDesc('Blend each edge from the colors of its endpoint nodes.')
+      .setDesc('Draw each connection as a true source-to-target color gradient when the renderer supports gradient textures.')
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.colorEdges).onChange(async (value) => {
           this.plugin.settings.colorEdges = value;
@@ -3226,7 +4084,7 @@ class GraphCommunitiesSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Show community legend')
-      .setDesc('Display each community color, hub note, and node count inside the graph view.')
+      .setDesc('Display every active knowledge theme and topic with counts and percentages of effective notes.')
       .addToggle((toggle) =>
         toggle.setValue(this.plugin.settings.showLegend).onChange(async (value) => {
           this.plugin.settings.showLegend = value;

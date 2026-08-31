@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.0 — 2026-08-31
+
+- Replace local project/folder presets with a neutral built-in taxonomy; keep personal taxonomies in the optional local topic manifest.
+- Commit asynchronous recompute results atomically so an older scan cannot overwrite the newest manifest, exclusions, or document model.
+- Report semantic unclassified notes correctly in the read-only Vault smoke summary.
+- Read the portable taxonomy and explicit parent/topic colors from `.codex/graph/topic-manifest.json`, with a built-in offline fallback.
+- Give every effective note exactly one node color from its primary subtopic; secondary topics remain relationship and search signals only.
+- Exclude README-like, AGENTS/system, macOS AppleDouble metadata, generated, empty, link-only navigation, frontmatter-excluded, and exact-duplicate Markdown files from graph analysis, counts, visible nodes, and incident links.
+- Read complete Markdown files before exact-duplicate checks and topic scoring so notes that differ after a long shared prefix remain distinct.
+- Show every active knowledge theme and subtopic in a semantic legend, including effective-note counts and percentages; mark a data-derived natural-break suggestion without imposing a theme-count limit.
+- Reserve high-chroma parent colors for theme rows and use distinct related child colors for note nodes.
+- Draw source-to-target link gradients using renderer textures when supported; use a solid color for equal endpoints and a midpoint-color compatibility fallback.
+- Restore original renderer callbacks, labels, visibility, node colors, link textures, tints, and opacity when disabled or unloaded.
+- Reapply exclusions after every native node/link render, including highlights, arrowheads, and pointer events, so hidden structural notes and their relationships cannot reappear.
+- Support `graph_primary_theme`, `graph_primary_topic`, `graph_secondary_topics`, `graph_exclude`, and `graph_exclude_reason` frontmatter overrides.
+
 ## 0.4.5 — 2026-07-22
 
 - Display graph file labels as `parent folder / filename` so repeated names such as README and index remain distinguishable.
@@ -34,7 +50,7 @@
 
 - Increase hue separation between the six global knowledge domains.
 - Add stronger lightness and saturation variation between distinct knowledge points while keeping related points inside the same domain band.
-- Expand the child-companion palette from red through rose and magenta to purple-red.
+- Expand the configurable project palette across a wider family of related shades.
 - Increase visual separation among the four compact PM categories.
 
 ## 0.4.0 — 2026-07-22
@@ -43,16 +59,16 @@
 - Add stable semantic hue bands for six knowledge domains and deterministic colors for all 35 knowledge points.
 - Blend each article's secondary knowledge points into its node color before relationship propagation.
 - Raise the default visible knowledge communities from 12 to 24 and support up to 36.
-- Reserve graph capacity for the child project's language, psychology, education, habit, motor, HCI, safety, governance, hardware, and market knowledge points.
-- Keep the child-companion parent red while assigning its child knowledge points fixed red/rose/pink/purple-red shades.
+- Reserve graph capacity for configured language, psychology, education, behavior, HCI, safety, governance, hardware, and market knowledge points.
+- Support a configured project parent with a related family of child-category colors.
 
 ## 0.3.0 — 2026-07-22
 
 - Replace filename/folder-first grouping with multi-label knowledge-point extraction from note bodies, headings, aliases, and tags.
-- Add a 35-concept ontology spanning child development, psychology, pedagogy, language, behavior, HCI, safety, AI engineering, governance, product, market, and hardware.
+- Add a broad ontology spanning research, psychology, pedagogy, language, behavior, HCI, safety, AI engineering, governance, product, market, and hardware.
 - Attach up to eight scored knowledge points and evidence terms to every graph document.
-- Group child-companion project notes by disciplinary knowledge points while preserving the red project parent and related child shades.
-- Keep 42 canonical PM Skill/Prompt representatives—one per selected keyword—inside four reduced-weight PM child communities.
+- Group configured project notes by disciplinary knowledge points while preserving their parent and related child shades.
+- Keep one canonical PM Skill/Prompt representative per selected keyword inside four reduced-weight PM child communities.
 - Show a selected node's extracted knowledge points in the graph legend.
 - Prevent a few project notes from incorrectly assigning an external knowledge community to the project parent.
 
@@ -63,12 +79,12 @@
 - Consolidate Product Manager material into three reduced-weight skill domains plus PM Prompts.
 - Strongly dim duplicate PM packages, references, tests, examples, and output samples while retaining total counts in the legend.
 - Align project and resource labels with configurable or inferred content collections without publishing local source material.
-- Add a hierarchical red color family for the child-companion work parent and its planning, endpoint, market, legal, and industrial-design subcategories.
+- Add a configurable hierarchical color family for a project parent and its child categories.
 - Add parent-category focus so project selection, child selection, and graph-node selection remain synchronized.
 - Preserve full-graph color when opening nodes and replace aggressive gray focus with light hue-preserving emphasis.
 - Keep reduced-weight PM supporting nodes visibly colored instead of nearly transparent and neutralized.
-- Recognize a summary-only PM corpus as a `PM 资料总结` parent with four searchable, blue-family child communities outside unrelated project parents.
-- Treat Desktop, Shared Knowledge, Resources, and other storage folders as locations rather than categories.
+- Recognize an optional summary-only PM corpus as a parent with four searchable child communities outside unrelated project parents.
+- Treat Inbox, Library, Resources, and other storage folders as locations rather than categories.
 - Add academic/project context plus multi-topic labels from body content and metadata.
 - Keep folder identity as a low-weight fallback when content signals are insufficient.
 - Add configurable priority keywords such as AI, LLM, ASR, RAG, or project names.

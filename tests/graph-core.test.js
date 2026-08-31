@@ -303,16 +303,16 @@ test('dims duplicate and supporting PM skill artifacts without removing them', (
   assert.equal(analysis.clusters[0].hub, documents[0].id);
 });
 
-test('shows packaged PM skill definitions but dims adjacent repository documentation', () => {
+test('keeps primary skill definitions visible while dimming generic support material', () => {
   const documents = [
     {
-      id: 'pm-skill-research/sources/repo/skills/roadmap/SKILL.md',
-      path: 'pm-skill-research/sources/repo/skills/roadmap/SKILL.md',
+      id: 'packages/skills/roadmap/SKILL.md',
+      path: 'packages/skills/roadmap/SKILL.md',
       content: '---\nname: roadmap-planning\n---\nProduct manager roadmap planning skill workflow and checklist.',
     },
     {
-      id: 'pm-skill-research/sources/repo/roadmap-guide.md',
-      path: 'pm-skill-research/sources/repo/roadmap-guide.md',
+      id: 'packages/references/roadmap-guide.md',
+      path: 'packages/references/roadmap-guide.md',
       content: 'Product manager product management roadmap planning skill guide and workflow.',
     },
   ];
@@ -326,109 +326,23 @@ test('shows packaged PM skill definitions but dims adjacent repository documenta
   assert.equal(model.documents.get(documents[1].id).displayWeight, 0.3);
 });
 
-test('keeps a single PM summary visible under its summary parent', () => {
-  const documents = [{
-    id: 'Projects/Product-Management/PM资料总结.md',
-    path: 'Projects/Product-Management/PM资料总结.md',
-    tags: ['pm-summary', 'product-management'],
-    content: '# PM 资料总结\n产品经理资料只保留战略、执行、数据工具和 prompts 的汇总结论。',
-  }];
-  const model = core.buildHybridGraph(
-    core.createGraph(documents.map((document) => document.id)),
-    documents,
-    { projectWeight: 3, semanticWeight: 1 }
-  );
-  const analysis = core.analyzeGraph(model.graph, {
-    documents: model.documents,
-    maxCommunities: 4,
-    minCommunitySize: 3,
-  });
-
-  assert.equal(model.documents.get(documents[0].id).projectLabel, 'PM · 战略与发现');
-  assert.equal(model.documents.get(documents[0].id).parentLabel, 'PM 资料总结');
-  assert.equal(model.documents.get(documents[0].id).displayWeight, 1);
-  assert.equal(analysis.clusters.length, 1);
-  assert.equal(analysis.parents.length, 1);
-  assert.equal(analysis.parents[0].label, 'PM 资料总结');
-  assert.equal(analysis.clusters[0].label, 'PM · 战略与发现');
-});
-
-test('groups five PM summary notes into four searchable child categories', () => {
-  const documents = [
-    ['PM资料总结.md', ['pm-summary', 'pm-summary-root']],
-    ['PM资料总结/01-战略与发现.md', ['pm-summary', 'pm-summary-strategy-discovery']],
-    ['PM资料总结/02-执行与增长.md', ['pm-summary', 'pm-summary-execution-growth']],
-    ['PM资料总结/03-数据与工具.md', ['pm-summary', 'pm-summary-data-tools']],
-    ['PM资料总结/04-提示词与工作流.md', ['pm-summary', 'pm-summary-prompts-workflows']],
-  ].map(([path, tags]) => ({
-    id: path,
-    path,
-    tags,
-    content: `# ${path}\nProduct management summary`,
-  }));
-  const model = core.buildHybridGraph(
-    core.createGraph(documents.map((document) => document.id)),
-    documents,
-    { projectWeight: 3, semanticWeight: 1 }
-  );
-  const analysis = core.analyzeGraph(model.graph, {
-    documents: model.documents,
-    maxCommunities: 8,
-    minCommunitySize: 3,
-  });
-
-  assert.deepEqual(
-    analysis.clusters.map((cluster) => cluster.label).sort(),
-    ['PM · 战略与发现', 'PM · 执行与增长', 'PM · 数据与工具', 'PM · 提示词与工作流'].sort()
-  );
-  assert.equal(analysis.parents.length, 1);
-  assert.equal(analysis.parents[0].label, 'PM 资料总结');
-  assert.equal(analysis.parents[0].size, 5);
-});
-
-test('keeps one canonical PM representative per keyword inside the summary hierarchy', () => {
-  const documents = [
-    {
-      id: 'PM资料总结.md', path: 'PM资料总结.md',
-      tags: ['pm-summary', 'pm-summary-root'],
-      content: '# PM 资料总结',
-    },
-    {
-      id: 'PM-References/create-prd.md', path: 'PM-References/create-prd.md',
-      tags: ['product-management', 'pm-representative', 'pm-skill', 'pm-domain-execution-growth', 'pm-keyword-create-prd'],
-      content: 'type: pm-representative\n# Create PRD\nProduct requirements, release, roadmap and delivery workflow.',
-    },
-  ];
-  const model = core.buildHybridGraph(
-    core.createGraph(documents.map((document) => document.id)),
-    documents,
-    { projectWeight: 3, semanticWeight: 1 }
-  );
-  const representative = model.documents.get(documents[1].id);
-
-  assert.equal(representative.projectLabel, 'PM · 执行与增长');
-  assert.equal(representative.parentLabel, 'PM 资料总结');
-  assert.equal(representative.displayWeight, 0.72);
-  assert.ok(representative.topicTags.includes('execution-growth'));
-});
-
 test('uses content context and topics instead of generic storage folders', () => {
   const documents = [
     {
-      id: 'Desktop/a.md', path: 'Desktop/a.md',
+      id: 'Inbox/a.md', path: 'Inbox/a.md',
       content: 'University public course lecture and assignment about transformer language models, tokenization, attention, and LLM training.',
     },
     {
-      id: 'Shared Knowledge/b.md', path: 'Shared Knowledge/b.md',
+      id: 'Library/b.md', path: 'Library/b.md',
       content: 'University course lecture notes and research paper discussion about transformer language models, tokenizer design, and attention.',
     },
     {
-      id: 'Desktop/c.md', path: 'Desktop/c.md',
-      content: 'type: knowledge-card\nscope: work\n儿童陪伴机器人项目的数据治理、隐私、合规与监护人授权方案。产品原型需要明确验收标准。',
+      id: 'Inbox/c.md', path: 'Inbox/c.md',
+      content: 'type: knowledge-card\nscope: work\nA software project covering data governance, privacy, compliance, and authorization. The prototype has explicit acceptance criteria.',
     },
     {
-      id: 'Shared Knowledge/d.md', path: 'Shared Knowledge/d.md',
-      content: 'type: knowledge-card\nscope: competition\n陪伴机器人的儿童数据合规、隐私保护和版权红线，属于产品项目交付范围。',
+      id: 'Library/d.md', path: 'Library/d.md',
+      content: 'type: knowledge-card\nscope: competition\nThe product research covers data compliance, privacy protection, copyright, and delivery constraints.',
     },
   ];
   const model = core.buildHybridGraph(
@@ -444,19 +358,19 @@ test('uses content context and topics instead of generic storage folders', () =>
   const labels = new Set(analysis.clusters.map((cluster) => cluster.label));
 
   assert.ok(labels.has('数据隐私与合规治理'));
-  assert.ok(!labels.has('Desktop'));
-  assert.ok(!labels.has('Shared Knowledge'));
-  assert.deepEqual(model.documents.get('Desktop/a.md').contextTags, ['academic']);
-  assert.ok(model.documents.get('Desktop/a.md').knowledgePoints.some(
+  assert.ok(!labels.has('Inbox'));
+  assert.ok(!labels.has('Library'));
+  assert.deepEqual(model.documents.get('Inbox/a.md').contextTags, ['academic']);
+  assert.ok(model.documents.get('Inbox/a.md').knowledgePoints.some(
     (point) => point.label === '大语言模型与训练'
   ));
-  assert.ok(model.documents.get('Shared Knowledge/b.md').knowledgePoints.some(
+  assert.ok(model.documents.get('Library/b.md').knowledgePoints.some(
     (point) => point.label === '大语言模型与训练'
   ));
-  assert.ok(model.documents.get('Shared Knowledge/d.md').topicTags.includes('data-compliance'));
+  assert.ok(model.documents.get('Library/d.md').topicTags.includes('data-compliance'));
 });
 
-test('uses extracted knowledge points instead of Desktop collection names', () => {
+test('uses extracted knowledge points instead of collection names', () => {
   const documents = [
     {
       id: 'Projects/Market-Research/a.md',
@@ -494,105 +408,322 @@ test('uses extracted knowledge points instead of Desktop collection names', () =
   );
 });
 
-test('groups child companion work under one red parent with related child shades', () => {
+test('groups manifest-defined topics under their configured parent', () => {
+  const manifest = core.normalizeTopicManifest({
+    version: 1,
+    themes: [{
+      key: 'configured-domain',
+      label: 'Configured Domain',
+      color: '#3366CC',
+      topics: [
+        { key: 'configured-speech', label: 'Speech Notes', color: '#2244AA', terms: ['acoustic channel'] },
+        { key: 'configured-market', label: 'Market Notes', color: '#6688EE', terms: ['pricing landscape'] },
+      ],
+    }],
+  });
   const documents = [
     {
-      id: 'Projects/Child-Companion/Engineering/a.md',
-      path: 'Projects/Child-Companion/Engineering/a.md',
-      content: '儿童陪伴机器人端侧语音识别与模型评测项目交付。',
+      id: 'Collection/Engineering/a.md',
+      path: 'Collection/Engineering/a.md',
+      content: 'Acoustic channel evaluation and signal processing notes.',
     },
     {
-      id: 'Projects/Child-Companion/Engineering/b.md',
-      path: 'Projects/Child-Companion/Engineering/b.md',
-      content: '儿童陪伴机器人 ASR、儿童语音和语音识别模型的端侧验证。',
+      id: 'Collection/Engineering/b.md',
+      path: 'Collection/Engineering/b.md',
+      content: 'Acoustic channel benchmark and evaluation results.',
     },
     {
-      id: 'Projects/Child-Companion/Market/c.md',
-      path: 'Projects/Child-Companion/Market/c.md',
-      content: '儿童陪伴机器人竞品分析、市场调研与商业模式。',
+      id: 'Collection/Research/c.md',
+      path: 'Collection/Research/c.md',
+      content: 'Pricing landscape research and comparison.',
     },
     {
-      id: 'Projects/Child-Companion/Market/d.md',
-      path: 'Projects/Child-Companion/Market/d.md',
-      content: '儿童陪伴机器人市场研究、竞品定价和用户需求。',
+      id: 'Collection/Research/d.md',
+      path: 'Collection/Research/d.md',
+      content: 'Pricing landscape evidence and survey summary.',
     },
   ];
   const model = core.buildHybridGraph(
     core.createGraph(documents.map((document) => document.id)),
     documents,
-    { projectWeight: 3, semanticWeight: 1 }
+    { projectWeight: 3, semanticWeight: 1, topicManifest: manifest }
   );
   const analysis = core.analyzeGraph(model.graph, {
     documents: model.documents,
     maxCommunities: 4,
     minCommunitySize: 2,
+    topicManifest: manifest,
   });
 
   assert.ok([...model.documents.values()].every(
-    (document) => document.parentLabel === '儿童陪伴机器人（工作）'
+    (document) => document.parentLabel === 'Configured Domain'
   ));
   assert.equal(analysis.parents.length, 1);
-  assert.equal(analysis.parents[0].label, '儿童陪伴机器人（工作）');
-  assert.equal(analysis.parents[0].colorHex, '#DC2626');
+  assert.equal(analysis.parents[0].label, 'Configured Domain');
+  assert.equal(analysis.parents[0].colorHex, '#3366CC');
   assert.equal(analysis.parents[0].size, 4);
-  const colors = new Map(analysis.clusters.map((cluster) => [cluster.label, cluster.colorHex]));
-  assert.equal(
-    colors.get('儿童语音与 ASR'),
-    core.rgbIntToHex(core.knowledgePointColor('speech-asr', '@parent:child-companion-work'))
-  );
-  assert.equal(
-    colors.get('市场、竞品与商业模式'),
-    core.rgbIntToHex(core.knowledgePointColor('market-competition', '@parent:child-companion-work'))
-  );
-  assert.notEqual(colors.get('儿童语音与 ASR'), colors.get('市场、竞品与商业模式'));
+  assert.equal(analysis.colors.get(documents[0].id), 0x2244AA);
+  assert.equal(analysis.colors.get(documents[2].id), 0x6688EE);
   assert.ok(analysis.clusters.every(
-    (cluster) => cluster.parentKey === '@parent:child-companion-work'
+    (cluster) => cluster.parentKey === 'configured-domain'
   ));
 });
 
 test('assigns stable nearby hues to knowledge points in the same domain', () => {
   const languageModels = core.knowledgePointColor('language-models');
-  const softwareEngineering = core.knowledgePointColor('software-engineering');
+  const aiSystems = core.knowledgePointColor('ai-systems');
   const market = core.knowledgePointColor('market-competition');
-  const withinAi = core.colorDistance(languageModels, softwareEngineering);
+  const withinAi = core.colorDistance(languageModels, aiSystems);
   const acrossDomains = core.colorDistance(languageModels, market);
 
   assert.ok(withinAi < acrossDomains, `withinAi=${withinAi}, across=${acrossDomains}`);
-  assert.ok(acrossDomains > 220, `expected strong domain contrast, received ${acrossDomains}`);
-  assert.notEqual(languageModels, softwareEngineering);
+  assert.ok(acrossDomains > 130, `expected strong domain contrast, received ${acrossDomains}`);
+  assert.notEqual(languageModels, aiSystems);
   assert.equal(
     core.knowledgePointColor('language-models'),
     core.knowledgePointColor('大语言模型与训练')
   );
 });
 
-test('keeps child project shades in one family while separating knowledge types', () => {
-  const speech = core.knowledgePointColor(
-    'speech-asr', '@parent:child-companion-work'
-  );
-  const market = core.knowledgePointColor(
-    'market-competition', '@parent:child-companion-work'
-  );
+test('keeps unrelated built-in knowledge types visually distinct', () => {
+  const speech = core.knowledgePointColor('speech-asr');
+  const market = core.knowledgePointColor('market-competition');
   const contrast = core.colorDistance(speech, market);
 
-  assert.ok(contrast > 150, `expected red-to-purple-red contrast, received ${contrast}`);
+  assert.ok(contrast > 100, `expected strong topic contrast, received ${contrast}`);
 });
 
 test('extracts multiple disciplinary knowledge points from one module article', () => {
   const profile = core.extractKnowledgeProfile({
     id: 'six-modules.md',
-    path: 'Projects/Child-Companion/Research/six-modules.md',
-    title: '六大模块',
+    path: 'Collection/Research/six-modules.md',
+    title: 'Six Modules',
     tags: [],
     aliases: [],
-    headings: ['情绪陪护', '教学支持', '语言发展', '习惯养成'],
-    content: '儿童陪伴机器人包含情绪调节与安抚、教育学和游戏化学习、语言发展与亲子沟通、习惯养成与正向强化，并坚持低压力交互和非诊断边界。',
+    headings: ['Emotion', 'Teaching', 'Communication', 'Habits', 'Safety'],
+    content: 'The article connects psychology and emotional regulation, learning science and instructional design, language development and communication, habit formation and behavior design, plus safety and ethics.',
   });
   const labels = new Set(profile.knowledgePoints.map((point) => point.label));
 
-  assert.ok(labels.has('儿童心理与情绪支持'));
-  assert.ok(labels.has('教育学与学习科学'));
-  assert.ok(labels.has('语言发展与亲子沟通'));
-  assert.ok(labels.has('习惯形成与行为设计'));
-  assert.ok(labels.has('儿童安全与非诊断边界'));
+  assert.ok(labels.has('Psychology & Emotion'));
+  assert.ok(labels.has('Learning Science'));
+  assert.ok(labels.has('Language & Communication'));
+  assert.ok(labels.has('Behavior & Habits'));
+  assert.ok(labels.has('Safety & Ethics'));
+});
+
+test('excludes non-knowledge files and exact duplicate copies before graph analysis', () => {
+  const documents = [
+    {
+      id: 'A.md',
+      path: 'A.md',
+      content: '# Evidence\nA distinct knowledge statement with enough detail.',
+    },
+    {
+      id: 'B.md',
+      path: 'B.md',
+      content: '# Evidence\nA distinct knowledge statement with enough detail.',
+    },
+    {
+      id: 'ProjectREADME-notes.md',
+      path: 'ProjectREADME-notes.md',
+      content: '# README\nThis file contains unique prose but remains a README-like summary.',
+    },
+    {
+      id: 'AGENTS.md',
+      path: 'AGENTS.md',
+      content: '# Instructions\nSystem instructions.',
+    },
+    {
+      id: '._AGENTS.md',
+      path: '._AGENTS.md',
+      content: 'AppleDouble resource fork metadata',
+    },
+    {
+      id: 'generated/archive.md',
+      path: 'generated/archive.md',
+      content: '# Generated\nGenerated index content.',
+    },
+    {
+      id: 'Navigation.md',
+      path: 'Navigation.md',
+      content: '# Navigation\n- [A](A.md)\n- [B](B.md)\n- [C](C.md)',
+    },
+    {
+      id: 'Excluded.md',
+      path: 'Excluded.md',
+      content: '# Excluded\nKnowledge content.',
+      frontmatter: { graph_exclude: true, graph_exclude_reason: 'manual policy' },
+    },
+    { id: 'Empty.md', path: 'Empty.md', content: '---\ntags: [placeholder]\n---\n' },
+  ];
+  const result = core.filterEffectiveDocuments(documents);
+
+  assert.deepEqual(result.effective.map((document) => document.id), ['A.md']);
+  assert.match(result.excluded.get('B.md'), /duplicate of A\.md/);
+  assert.match(result.excluded.get('ProjectREADME-notes.md'), /document/);
+  assert.match(result.excluded.get('AGENTS.md'), /document/);
+  assert.equal(result.excluded.get('._AGENTS.md'), 'AppleDouble metadata');
+  assert.equal(result.excluded.get('generated/archive.md'), 'system or generated path');
+  assert.equal(result.excluded.get('Navigation.md'), 'link-only navigation document');
+  assert.equal(result.excluded.get('Excluded.md'), 'manual policy');
+  assert.equal(result.excluded.get('Empty.md'), 'empty document');
+});
+
+test('uses only the primary topic color while retaining secondary topics as metadata', () => {
+  const manifest = core.normalizeTopicManifest({
+    version: 1,
+    themes: [
+      {
+        key: 'theme-a',
+        label: 'Theme A',
+        color: '#FF0000',
+        topics: [
+          { key: 'topic-a1', label: 'Topic A1', color: '#AA1100', terms: ['alpha'] },
+          { key: 'topic-a2', label: 'Topic A2', color: '#CC3300', terms: ['beta'] },
+        ],
+      },
+      {
+        key: 'theme-b',
+        label: 'Theme B',
+        color: '#00AAFF',
+        topics: [
+          { key: 'topic-b1', label: 'Topic B1', color: '#0077CC', terms: ['gamma'] },
+        ],
+      },
+    ],
+  });
+  assert.equal(manifest.valid, true);
+  const documents = [
+    {
+      id: 'one.md',
+      path: 'one.md',
+      content: 'alpha beta',
+      graphPrimaryTheme: 'theme-a',
+      graphPrimaryTopic: 'topic-a1',
+      graphSecondaryTopics: ['topic-a2', 'topic-b1'],
+    },
+    {
+      id: 'two.md',
+      path: 'two.md',
+      content: 'alpha gamma',
+      graphPrimaryTheme: 'theme-a',
+      graphPrimaryTopic: 'topic-a1',
+      graphSecondaryTopics: ['topic-b1'],
+    },
+    {
+      id: 'three.md',
+      path: 'three.md',
+      content: 'gamma',
+      graphPrimaryTheme: 'theme-b',
+      graphPrimaryTopic: 'topic-b1',
+    },
+  ];
+  const model = core.buildHybridGraph(
+    core.createGraph(documents.map((document) => document.id)),
+    documents,
+    {
+      projectWeight: 0,
+      semanticWeight: 0,
+      topicManifest: manifest,
+    }
+  );
+  const analysis = core.analyzeGraph(model.graph, {
+    documents: model.documents,
+    topicManifest: manifest,
+    maxCommunities: 1,
+  });
+
+  assert.equal(analysis.colors.get('one.md'), 0xAA1100);
+  assert.equal(analysis.colors.get('two.md'), 0xAA1100);
+  assert.equal(analysis.colors.get('three.md'), 0x0077CC);
+  assert.deepEqual(
+    model.documents.get('one.md').knowledgePoints.map((point) => point.key),
+    ['topic-a1', 'topic-a2', 'topic-b1']
+  );
+  assert.equal(analysis.semanticThemes.length, 2);
+  assert.equal(analysis.semanticThemes[0].size, 2);
+  assert.ok(Math.abs(analysis.semanticThemes[0].percentage - (200 / 3)) < 1e-9);
+  assert.equal(analysis.semanticTopics.find((topic) => topic.key === 'topic-a2'), undefined);
+});
+
+test('natural-break recommendation is percentage-based and has no theme-count cap', () => {
+  // Deliberately synthetic distribution: the largest relative drop follows theme 5.
+  const themes = [40, 24, 15, 10, 7, 2, 1.5, 0.5]
+    .map((percentage, index) => ({
+      key: `theme-${index + 1}`,
+      size: Math.round(percentage * 100),
+      percentage,
+    }));
+  const recommended = core.naturalBreakRecommendation(themes);
+
+  assert.deepEqual(
+    [...recommended],
+    ['theme-1', 'theme-2', 'theme-3', 'theme-4', 'theme-5']
+  );
+  assert.equal(themes.length, 8);
+});
+
+test('secondary-only frontmatter remains unclassified and neutral', () => {
+  const manifest = core.normalizeTopicManifest({
+    version: 1,
+    themes: [{
+      key: 'theme-a',
+      label: 'Theme A',
+      color: '#FF0000',
+      topics: [{
+        key: 'topic-a',
+        label: 'Topic A',
+        color: '#ABCDEF',
+        terms: ['never-matches'],
+      }],
+    }],
+  });
+  const documents = [{
+    id: 'secondary-only.md',
+    path: 'secondary-only.md',
+    content: 'This text does not match the taxonomy.',
+    graphSecondaryTopics: ['topic-a'],
+  }];
+  const model = core.buildHybridGraph(
+    core.createGraph(['secondary-only.md']),
+    documents,
+    { projectWeight: 0, semanticWeight: 0, topicManifest: manifest }
+  );
+  const analysis = core.analyzeGraph(model.graph, {
+    documents: model.documents,
+    topicManifest: manifest,
+    neutralColor: '#8B92A1',
+  });
+  const document = model.documents.get('secondary-only.md');
+  const unclassified = analysis.semanticThemes.find(
+    (theme) => theme.key === '@theme:unclassified'
+  );
+
+  assert.deepEqual(document.knowledgePoints, []);
+  assert.deepEqual(
+    document.secondaryKnowledgePoints.map((point) => point.key),
+    ['topic-a']
+  );
+  assert.equal(analysis.colors.get('secondary-only.md'), 0x8B92A1);
+  assert.equal(
+    analysis.semanticAssignments.get('secondary-only.md'),
+    '@topic:unclassified'
+  );
+  assert.equal(analysis.neutralCount, 1);
+  assert.equal(unclassified.recommended, false);
+});
+
+test('does not collapse long notes that differ after the classification excerpt', () => {
+  const sharedPrefix = 'x'.repeat(24000);
+  const result = core.filterEffectiveDocuments([
+    { id: 'Long-A.md', path: 'Long-A.md', content: `${sharedPrefix} A-tail` },
+    { id: 'Long-B.md', path: 'Long-B.md', content: `${sharedPrefix} B-tail` },
+  ]);
+
+  assert.deepEqual(
+    result.effective.map((document) => document.id),
+    ['Long-A.md', 'Long-B.md']
+  );
+  assert.equal(result.excluded.size, 0);
 });

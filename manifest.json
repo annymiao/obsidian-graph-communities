@@ -1,9 +1,9 @@
 {
   "id": "graph-communities",
   "name": "Graph Communities",
-  "version": "0.4.5",
+  "version": "0.5.0",
   "minAppVersion": "1.7.0",
-  "description": "Extracts multi-label knowledge points from note content and colors related knowledge communities.",
+  "description": "Colors effective notes by one primary topic and draws endpoint-gradient knowledge links.",
   "author": "annymiao",
   "authorUrl": "https://github.com/annymiao",
   "isDesktopOnly": true
