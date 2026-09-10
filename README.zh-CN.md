@@ -7,6 +7,10 @@ Graph Communities 会把 Obsidian 的黑白关系图谱变成一张按知识点�
 次要主题只保留为关系、搜索和悬停上下文，不混入节点颜色，也不参与主题占比。
 结构性文件不进入可见图谱；剩余连线按源节点颜色到目标节点颜色绘制。
 
+仓库的 [`mcp/`](mcp/) 目录还包含一个可选的只读知识网关。它不会把整个 Vault 交给 AI，而是返回带来源、
+受 token 预算约束的小型证据包：默认只检索稳定核心知识；项目、参考资料和历史语料必须显式选择。
+Obsidian 图谱插件仍然完全本地运行，也不依赖这个网关。
+
 ## 主要功能
 
 - 在本地完整读取每篇 Markdown 笔记，识别学术、项目、参考资料及 Prompt/Skill 等用途。
@@ -69,11 +73,16 @@ Graph Communities 会把 Obsidian 的黑白关系图谱变成一张按知识点�
 
 ### 本地开发安装
 
-项目除了 Node.js 外没有其他构建或运行依赖：
+Obsidian 插件本身除了 Node.js 外没有其他构建或运行依赖。可选 MCP 网关使用 pnpm：
 
 ```bash
 npm run verify
 node scripts/install-local.mjs /path/to/vault --enable
+
+cd mcp
+pnpm install --frozen-lockfile
+pnpm run build
+pnpm test
 ```
 
 安装新构建后需要重启或重新加载 Obsidian。
@@ -141,6 +150,8 @@ npm run verify
 # 对真实知识库运行只读冒烟测试
 node scripts/vault-smoke.mjs /path/to/vault
 ```
+
+第二大脑的分阶段路线见 [`docs/SECOND-BRAIN-ROADMAP.md`](docs/SECOND-BRAIN-ROADMAP.md)：先解决检索边界，再处理分散来源，最后建设跨模型记忆。
 
 ## 许可证
 

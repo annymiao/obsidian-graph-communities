@@ -11,6 +11,9 @@
 *.local
 data.json
 node_modules/
+dist/
+.pnpm-store/
+*.tsbuildinfo
 coverage/
 *.log
 work/
@@ -18,3 +21,20 @@ scratch/
 outputs/
 knowledge-index.json
 index-manifest.json
+
+# Personal knowledge and attachment boundaries
+vault/
+Vault/
+Obsidian Vault/
+notes/
+attachments/
+backups/
+Backups/
+*.pdf
+*.docx
+*.xlsx
+*.pptx
+*.pages
+*.zip
+*.7z
+*.rar

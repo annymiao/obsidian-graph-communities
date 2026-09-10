@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.0 — 2026-09-10
+
+- Add the optional read-only Obsidian knowledge gateway under `mcp/` while keeping Vault content and generated indexes outside Git.
+- Split retrieval into `default`, `project`, `reference`, and `history` modes; default access contains only stable core notes and hard exclusions remain inaccessible in every mode.
+- Prevent note-authored frontmatter from promoting untrusted, generated, sensitive, control, or legacy material into default retrieval.
+- Replace whole-document set scoring with structure-aware chunks and BM25 lexical ranking; use the eligible link graph only as a bounded reranker, never as evidence by itself.
+- Add normalized exact deduplication, restricted-duplicate quarantine, explicit abstention, source diversity, and token-budgeted context assembly.
+- Fail closed on unsupported frontmatter syntax, incomplete Vault scans, unsafe file reads, and file-count overflow instead of serving a partially classified index.
+- Add synthetic regressions for corpus isolation, long-document tail recall, token budgets, graph-only false positives, authentication, and private review flow.
+
 ## 0.5.0 — 2026-08-31
 
 - Replace local project/folder presets with a neutral built-in taxonomy; keep personal taxonomies in the optional local topic manifest.

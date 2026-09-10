@@ -8,6 +8,11 @@ subtopic's stable color. Secondary topics remain available as relationship, sear
 blend the node color or enter theme percentages. Structural notes are removed from the visible graph, and each
 remaining link is drawn from its source color to its target color.
 
+The repository also contains an optional read-only knowledge gateway under [`mcp/`](mcp/). It gives AI clients a
+small, source-linked evidence pack instead of exposing the whole Vault: stable core knowledge is the default, while
+project, reference, and history corpora require an explicit retrieval mode. The Obsidian plugin remains fully local
+and independent of this gateway.
+
 ## What it does
 
 - Reads each local Markdown note in full to infer academic, project, reference, and prompt/skill context.
@@ -70,11 +75,16 @@ Node size remains controlled by Obsidian. Graph Communities changes color only:
 
 ### Development installation
 
-This project has no runtime or build dependencies beyond Node.js:
+The Obsidian plugin itself has no runtime or build dependencies beyond Node.js. The optional MCP gateway uses pnpm:
 
 ```bash
 npm run verify
 node scripts/install-local.mjs /path/to/vault --enable
+
+cd mcp
+pnpm install --frozen-lockfile
+pnpm run build
+pnpm test
 ```
 
 Restart or reload Obsidian after installing a new build.
@@ -152,6 +162,8 @@ Source layout:
 - `scripts/build.mjs` — creates the distributable `main.js`.
 - `scripts/audit-release.mjs` — verifies the release allowlist, versions, local-path boundary, and network-free runtime.
 - `tests/graph-core.test.js` — deterministic algorithm tests.
+- `mcp/` — optional read-only, scope-aware retrieval service with synthetic privacy and retrieval regressions.
+- `docs/SECOND-BRAIN-ROADMAP.md` — ordered plan from bounded retrieval to distributed sources and cross-model memory.
 
 ## License
 

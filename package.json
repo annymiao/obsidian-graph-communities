@@ -1,6 +1,6 @@
 {
   "name": "obsidian-graph-communities",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Primary-topic knowledge graph coloring, semantic exclusions, and endpoint-gradient links for Obsidian.",
   "private": false,
   "license": "MIT",
@@ -8,12 +8,15 @@
   "type": "commonjs",
   "scripts": {
     "build": "node scripts/build.mjs",
+    "mcp:build": "pnpm --dir mcp run build",
     "check": "node --check src/graph-core.js && node --check src/plugin.js && node --check main.js",
     "audit:release": "node scripts/audit-release.mjs",
     "install:local": "node scripts/install-local.mjs",
     "test": "node --test tests/*.test.js",
-    "verify": "node scripts/build.mjs && node --check main.js && node scripts/audit-release.mjs && node --test tests/*.test.js"
+    "mcp:test": "pnpm --dir mcp run test",
+    "verify": "pnpm run build && pnpm run check && pnpm run mcp:build && pnpm run test && pnpm run mcp:test && pnpm run audit:release"
   },
+  "packageManager": "pnpm@11.19.0",
   "keywords": [
     "obsidian",
     "obsidian-plugin",

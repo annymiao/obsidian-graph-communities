@@ -22,7 +22,7 @@ GitHub releases are allowlisted to exactly three installable files:
 - `manifest.json`
 - `styles.css`
 
-Vault notes, `.obsidian` settings, local paths, generated indexes, caches, environment files, credentials, and test outputs are excluded. `npm run verify` rebuilds the bundle, runs the release audit, and executes the test suite before publication.
+Vault notes, `.obsidian` settings, local paths, generated indexes, caches, environment files, credentials, and test outputs are excluded. The optional `mcp/` directory contains source code, documentation, and synthetic tests only. `npm run verify` rebuilds both components, scans tracked text files, runs the release audit, and executes both test suites before publication.
 
 ## Reporting a vulnerability
 

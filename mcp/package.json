@@ -1,0 +1,30 @@
+{
+	"name": "obsidian-knowledge-gateway",
+	"version": "0.6.0",
+	"private": true,
+	"description": "Read-only MCP server for retrieving relevant knowledge from an Obsidian vault.",
+	"type": "module",
+	"bin": {
+		"obsidian-knowledge-mcp": "dist/src/index.js",
+		"obsidian-knowledge-gateway": "dist/src/http.js"
+	},
+	"scripts": {
+		"build": "tsc -p tsconfig.json",
+		"start": "node dist/src/index.js",
+		"start:http": "node dist/src/http.js",
+		"test": "node --test dist/tests/*.test.js"
+	},
+	"dependencies": {
+		"@modelcontextprotocol/sdk": "1.29.0",
+		"zod": "4.4.3"
+	},
+	"devDependencies": {
+		"@types/node": "22.15.17",
+		"typescript": "5.8.3"
+	},
+	"engines": {
+		"node": ">=20"
+	},
+	"packageManager": "pnpm@11.19.0",
+	"license": "0-BSD"
+}

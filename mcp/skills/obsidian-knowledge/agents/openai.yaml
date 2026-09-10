@@ -1,0 +1,14 @@
+interface:
+  display_name: "Obsidian 知识"
+  short_description: "审核后再把个人 Obsidian 知识发送给 Codex"
+  default_prompt: "Use $obsidian-knowledge to open the mandatory editable local review window, then collect the approved one-time transmission; no Vault content may reach Codex before I confirm it."
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "obsidian_knowledge"
+      description: "Read-only personal Obsidian knowledge server"
+      transport: "stdio"
+
+policy:
+  allow_implicit_invocation: true

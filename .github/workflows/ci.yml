@@ -1,15 +1,16 @@
-name: Release Obsidian plugin
+name: CI
 
 on:
   push:
-    tags:
-      - "v*"
+    branches: ['**']
+  pull_request:
+    branches: ['**']
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
+  verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,16 +24,5 @@ jobs:
           cache-dependency-path: mcp/pnpm-lock.yaml
       - name: Install MCP dependencies
         run: pnpm --dir mcp install --frozen-lockfile
-      - name: Verify tag matches manifest
-        run: |
-          expected="v$(node -p 'require("./manifest.json").version')"
-          test "$GITHUB_REF_NAME" = "$expected"
-      - name: Verify
+      - name: Verify plugin, MCP, tests, and release boundary
         run: pnpm run verify
-      - name: Create release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            main.js
-            manifest.json
-            styles.css
