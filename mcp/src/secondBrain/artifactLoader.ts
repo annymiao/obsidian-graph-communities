@@ -1,13 +1,17 @@
 import { ArtifactGenerationStore, type PublishedArtifactGeneration } from '../persistence/artifactGenerationStore.js';
-import { COMPILED_ARTIFACT_SCHEMA_VERSION, type DerivedDocumentArtifact } from '../persistence/artifactTypes.js';
-import { materializeLexicalArtifact } from '../persistence/compactLexical.js';
+import {
+	COMPILED_ARTIFACT_SCHEMA_VERSION,
+	type CompactChunkLexicalArtifact,
+	type DerivedDocumentArtifact,
+} from '../persistence/artifactTypes.js';
+import { decodeCompactPostingIndex, materializeLexicalArtifact } from '../persistence/compactLexical.js';
 import {
 	EMBEDDING_INPUT_RECIPE,
 	type EmbeddingAdapter,
 	type VectorArtifact as QueryVectorArtifact,
 } from '../hybrid/embedding.js';
 import { countTokens } from '../hybrid/text.js';
-import type { HybridRecord, HybridRetrievalScope } from '../hybrid/types.js';
+import type { Bm25Artifact, HybridRecord, HybridRetrievalScope } from '../hybrid/types.js';
 import {
 	createChunkId,
 	createDocumentId,
@@ -32,6 +36,7 @@ export interface LoadedCompiledSource {
 	descriptor: SecondBrainSourceDescriptor;
 	generation: PublishedArtifactGeneration;
 	records: readonly HybridRecord[];
+	bm25Artifact: Bm25Artifact;
 	vectorArtifact: QueryVectorArtifact | null;
 	activeDocuments: number;
 }
@@ -50,6 +55,30 @@ export async function loadCompiledSource(
 	if (
 		descriptor.pinnedManifestSha256 !== undefined
 		&& generation.manifestSha256 !== descriptor.pinnedManifestSha256
+	) throw new Error(`Compiled source ${descriptor.sourceId} does not match its pinned manifest.`);
+	return validateCompiledSourceGeneration(
+		descriptor,
+		embeddingAdapter,
+		requirePrecomputedVectors,
+		generation,
+	);
+}
+
+/** Deep-validates an already loaded generation before compiler reuse or online publication. */
+export async function validateCompiledSourceGeneration(
+	descriptor: SecondBrainSourceDescriptor,
+	embeddingAdapter: EmbeddingAdapter,
+	requirePrecomputedVectors: boolean,
+	generation: PublishedArtifactGeneration,
+): Promise<LoadedCompiledSource> {
+	validateDescriptor(descriptor);
+	if (
+		descriptor.pinnedGenerationId !== undefined
+		&& descriptor.pinnedGenerationId !== generation.generationId
+	) throw new Error(`Compiled source ${descriptor.sourceId} does not match its pinned generation.`);
+	if (
+		descriptor.pinnedManifestSha256 !== undefined
+		&& descriptor.pinnedManifestSha256 !== generation.manifestSha256
 	) throw new Error(`Compiled source ${descriptor.sourceId} does not match its pinned manifest.`);
 	const { bundle } = generation;
 	if (bundle.schemaVersion !== COMPILED_ARTIFACT_SCHEMA_VERSION) {
@@ -147,6 +176,11 @@ export async function loadCompiledSource(
 	);
 	const records: HybridRecord[] = [];
 	const expectedLexical = new Map<number, { length: number; frequencies: Map<string, number> }>();
+	const expectedChunkLexical = new Map<string, {
+		versionId: string;
+		length: number;
+		frequencies: Array<[string, number]>;
+	}>();
 	const derivedPaths = new Set<string>();
 	const recordIds = new Set<string>();
 	for (const document of bundle.layers.derived.data.documents) {
@@ -217,6 +251,11 @@ export async function loadCompiledSource(
 				);
 			}
 			recordIds.add(chunk.chunkId);
+			expectedChunkLexical.set(chunk.chunkId, {
+				versionId: document.versionId,
+				length: Math.max(1, expectedTokenCount),
+				frequencies: expectedFrequencies,
+			});
 			records.push({
 				id: chunk.chunkId,
 				sourceId: document.sourceId,
@@ -285,6 +324,15 @@ export async function loadCompiledSource(
 			}
 		}
 	}
+	const persistedChunkLexical = bundle.layers.lexical.data.chunkIndex;
+	if (persistedChunkLexical === undefined) {
+		throw new Error(`Compiled source ${descriptor.sourceId} is missing its required chunk lexical index; recompile this source.`);
+	}
+	const bm25Artifact = validateAndConvertBm25Artifact(
+		persistedChunkLexical,
+		expectedChunkLexical,
+		descriptor.sourceId,
+	);
 	const expectedTombstones = bundle.layers.catalog.data.entries
 		.filter((entry) => entry.tombstoneAt !== null).length;
 	const expectedDuplicates = bundle.layers.catalog.data.entries
@@ -315,9 +363,96 @@ export async function loadCompiledSource(
 		descriptor,
 		generation,
 		records,
+		bm25Artifact,
 		vectorArtifact,
 		activeDocuments: derivedPaths.size,
 	};
+}
+
+function validateAndConvertBm25Artifact(
+	artifact: CompactChunkLexicalArtifact,
+	expectedByRecordId: ReadonlyMap<string, {
+		versionId: string;
+		length: number;
+		frequencies: Array<[string, number]>;
+	}>,
+	sourceId: string,
+): Bm25Artifact {
+	if (
+		artifact.schemaVersion !== COMPILED_ARTIFACT_SCHEMA_VERSION
+		|| !Array.isArray(artifact.records)
+	) throw new Error(`Compiled source ${sourceId} has a malformed chunk lexical artifact.`);
+	let materialized: ReturnType<typeof decodeCompactPostingIndex>;
+	try {
+		materialized = decodeCompactPostingIndex(artifact.index);
+	} catch {
+		throw new Error(`Compiled source ${sourceId} has a malformed chunk lexical index.`);
+	}
+	if (
+		artifact.index.documentCount !== artifact.records.length
+		|| materialized.documentLengths.size !== artifact.records.length
+		|| [...materialized.documentLengths.keys()].some((ordinal) => (
+			!Number.isSafeInteger(ordinal) || ordinal < 0 || ordinal >= artifact.records.length
+		))
+	) throw new Error(`Compiled source ${sourceId} has chunk lexical length-table drift.`);
+
+	const termsByOrdinal = new Map<number, Array<[string, number]>>();
+	for (const [term, posting] of materialized.postings) {
+		if (typeof term !== 'string' || term.length === 0) {
+			throw new Error(`Compiled source ${sourceId} has a malformed chunk lexical term.`);
+		}
+		for (const [ordinal, frequency] of posting) {
+			if (
+				!Number.isSafeInteger(ordinal)
+				|| ordinal < 0
+				|| ordinal >= artifact.records.length
+				|| !Number.isSafeInteger(frequency)
+				|| frequency <= 0
+			) throw new Error(`Compiled source ${sourceId} has a malformed chunk lexical posting.`);
+			const terms = termsByOrdinal.get(ordinal) ?? [];
+			terms.push([term, frequency]);
+			termsByOrdinal.set(ordinal, terms);
+		}
+	}
+
+	const seen = new Set<string>();
+	const entries: Bm25Artifact['entries'][number][] = [];
+	for (let ordinal = 0; ordinal < artifact.records.length; ordinal += 1) {
+		const identity = artifact.records[ordinal];
+		if (
+			identity === undefined
+			|| !CHUNK_ID_PATTERN.test(identity.recordId)
+			|| !VERSION_ID_PATTERN.test(identity.versionId)
+		) throw new Error(`Compiled source ${sourceId} has a malformed chunk lexical identity.`);
+		if (seen.has(identity.recordId)) {
+			throw new Error(`Compiled source ${sourceId} has a duplicate chunk lexical record.`);
+		}
+		seen.add(identity.recordId);
+		const expected = expectedByRecordId.get(identity.recordId);
+		if (expected === undefined) {
+			throw new Error(`Compiled source ${sourceId} has an extra chunk lexical record.`);
+		}
+		if (identity.versionId !== expected.versionId) {
+			throw new Error(`Compiled source ${sourceId} has a stale chunk lexical record.`);
+		}
+		const documentLength = materialized.documentLengths.get(ordinal);
+		const termFrequencies = (termsByOrdinal.get(ordinal) ?? [])
+			.sort(([first], [second]) => first.localeCompare(second));
+		if (
+			documentLength !== expected.length
+			|| canonicalJson(termFrequencies) !== canonicalJson(expected.frequencies)
+		) throw new Error(`Compiled source ${sourceId} has chunk lexical content drift.`);
+		entries.push({
+			recordId: identity.recordId,
+			versionId: identity.versionId,
+			documentLength,
+			termFrequencies,
+		});
+	}
+	if (seen.size !== expectedByRecordId.size) {
+		throw new Error(`Compiled source ${sourceId} is missing a chunk lexical record.`);
+	}
+	return { schemaVersion: 1, entries };
 }
 
 function validateDescriptor(descriptor: SecondBrainSourceDescriptor): void {

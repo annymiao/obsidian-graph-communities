@@ -7,6 +7,7 @@ import {
 } from './embedding.js';
 import { countTokens, normalizeText, throwIfCancelled, tokenize, uniqueTokens } from './text.js';
 import type {
+	Bm25Artifact,
 	Bm25RetrieverContract,
 	DenseRetrieverContract,
 	HierarchyRetrieverContract,
@@ -50,6 +51,73 @@ export class Bm25Retriever implements Bm25RetrieverContract {
 			}
 			this.#lengths.set(record.id, Math.max(1, length));
 		}
+	}
+
+	static fromArtifact(
+		records: readonly HybridRecord[],
+		artifact: Bm25Artifact,
+		id = 'bm25-persisted-v1',
+	): Bm25Retriever {
+		if (artifact.schemaVersion !== 1 || !Array.isArray(artifact.entries)) {
+			throw new Error('Unsupported BM25 artifact schema.');
+		}
+		const recordsById = new Map<string, HybridRecord>();
+		for (const record of records) {
+			if (recordsById.has(record.id)) throw new Error('Duplicate current record in BM25 artifact binding.');
+			recordsById.set(record.id, record);
+		}
+		const retriever = new Bm25Retriever([], id);
+		const seen = new Set<string>();
+		for (const entry of artifact.entries) {
+			if (
+				typeof entry.recordId !== 'string'
+				|| entry.recordId.length === 0
+				|| typeof entry.versionId !== 'string'
+				|| entry.versionId.length === 0
+			) throw new Error('Malformed BM25 artifact identity.');
+			if (seen.has(entry.recordId)) throw new Error('Duplicate BM25 artifact record.');
+			seen.add(entry.recordId);
+			const record = recordsById.get(entry.recordId);
+			if (record === undefined) throw new Error('Extra BM25 artifact record.');
+			if (record.versionId !== entry.versionId) throw new Error('Stale BM25 artifact record.');
+			if (!Number.isSafeInteger(entry.documentLength) || entry.documentLength < 1) {
+				throw new Error('Malformed BM25 artifact document length.');
+			}
+			if (!Array.isArray(entry.termFrequencies)) {
+				throw new Error('Malformed BM25 artifact term frequencies.');
+			}
+			const terms = new Set<string>();
+			let totalFrequency = 0;
+			for (const pair of entry.termFrequencies) {
+				if (!Array.isArray(pair) || pair.length !== 2) {
+					throw new Error('Malformed BM25 artifact term frequency.');
+				}
+				const [term, frequency] = pair;
+				if (
+					typeof term !== 'string'
+					|| term.length === 0
+					|| terms.has(term)
+					|| !Number.isSafeInteger(frequency)
+					|| frequency <= 0
+				) throw new Error('Malformed BM25 artifact term frequency.');
+				terms.add(term);
+				totalFrequency += frequency;
+				if (!Number.isSafeInteger(totalFrequency)) {
+					throw new Error('Malformed BM25 artifact document length.');
+				}
+				const posting = retriever.#postings.get(term) ?? new Map<string, number>();
+				posting.set(entry.recordId, frequency);
+				retriever.#postings.set(term, posting);
+			}
+			if (Math.max(1, totalFrequency) !== entry.documentLength) {
+				throw new Error('BM25 artifact length does not match its term frequencies.');
+			}
+			retriever.#lengths.set(entry.recordId, entry.documentLength);
+		}
+		for (const record of records) {
+			if (!seen.has(record.id)) throw new Error('Missing BM25 artifact record.');
+		}
+		return retriever;
 	}
 
 	async retrieve(context: RetrievalContext): Promise<readonly RetrievalHit[]> {
@@ -272,8 +340,14 @@ export class TemporalRetriever implements TemporalRetrieverContract {
 	}
 
 	async retrieve(context: RetrievalContext): Promise<readonly RetrievalHit[]> {
-		const constraint = context.query.temporal ?? inferredTemporalConstraint(context.query.text);
-		if (constraint === undefined) return [];
+		const inferred = inferredTemporalConstraint(context.query.text);
+		const constraint = context.query.temporal ?? inferred;
+		// Explicit date bounds already filter the shared candidate set in the
+		// engine. They are not relevance signals on their own: otherwise every
+		// unrelated record inside a requested range would become positive evidence.
+		if (constraint === undefined || !(constraint.preferRecent ?? inferred?.preferRecent ?? false)) {
+			return [];
+		}
 		if (constraint.after !== undefined && constraint.before !== undefined && constraint.after > constraint.before) {
 			return [];
 		}
@@ -398,6 +472,7 @@ export async function createDefaultRetrievers(
 	request: { signal: AbortSignal; deadlineAt: number },
 	embeddingAdapter: EmbeddingAdapter = new DeterministicLocalEmbedding(),
 	vectorArtifact?: VectorArtifact,
+	bm25Artifact?: Bm25Artifact,
 ): Promise<readonly [
 	Bm25Retriever,
 	DenseRetriever,
@@ -409,7 +484,9 @@ export async function createDefaultRetrievers(
 		? await DenseRetriever.create(records, request, embeddingAdapter)
 		: DenseRetriever.fromArtifact(records, embeddingAdapter, vectorArtifact);
 	return [
-		new Bm25Retriever(records),
+		bm25Artifact === undefined
+			? new Bm25Retriever(records)
+			: Bm25Retriever.fromArtifact(records, bm25Artifact),
 		dense,
 		new MetadataRetriever(records),
 		new TemporalRetriever(records),

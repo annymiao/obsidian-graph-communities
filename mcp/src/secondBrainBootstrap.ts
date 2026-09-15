@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, open, rename, unlink } from 'node:fs/promises';
+import { lstat, open, realpath, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { SafeDirectoryWriterAdapter } from './adapters/directoryWriter.js';
 import { OfflineKnowledgeCompiler } from './compiler/offlineKnowledgeCompiler.js';
@@ -19,6 +19,7 @@ import {
 	readPrivateFile,
 	syncPrivateDirectory,
 } from './privateFs.js';
+import { withPrivateDirectoryLock } from './persistence/privateDirectoryLock.js';
 import { readTransmissionReviewMode, type TransmissionReviewMode } from './reviewPolicy.js';
 import { createSourceId, normalizeDocumentPath, type SourceId } from './stableIds.js';
 import { createOfflineEmbeddingProvider } from './secondBrain/embeddingBridge.js';
@@ -37,10 +38,12 @@ const DEFAULT_EMBEDDING_DIMENSION = 384;
 const DEFAULT_RERANK_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAXIMUM_RERANK_REQUEST_BYTES = 8 * 1024 * 1024;
 const MAXIMUM_RUNTIME_CATALOG_BYTES = 2 * 1024 * 1024;
-const RUNTIME_CATALOG_SCHEMA_VERSION = 2 as const;
+const RUNTIME_CATALOG_SCHEMA_VERSION = 3 as const;
 const NO_FOLLOW = constants.O_NOFOLLOW ?? 0;
 const LOGICAL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const SOURCE_ID_PATTERN = /^src_v1_[A-Za-z0-9_-]{43}$/u;
+const GENERATION_ID_PATTERN = /^gen-[0-9]{13}-[a-f0-9]{32}$/u;
+const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
 const RETRIEVAL_MODES = ['default', 'project', 'reference', 'history'] as const;
 
 export interface ConfiguredSecondBrainSource {
@@ -60,6 +63,31 @@ export interface SecondBrainBuildConfiguration {
 	runtimeCatalogPath: string;
 }
 
+export interface SecondBrainGenerationPin {
+	sourceId: string;
+	generationId: string;
+	manifestSha256: string;
+}
+
+export type RuntimeCatalogConflictCode =
+	| 'RUNTIME_CATALOG_PINS_CHANGED'
+	| 'RUNTIME_CATALOG_BINDING_CHANGED'
+	| 'RUNTIME_CATALOG_SOURCE_BINDING_CHANGED'
+	| 'RUNTIME_CATALOG_SOURCE_PIN_CHANGED';
+
+/** A valid concurrent publisher won a compare-and-swap race; callers may retry from a fresh snapshot. */
+export class RuntimeCatalogConflictError extends Error {
+	readonly code: RuntimeCatalogConflictCode;
+	readonly retryable: boolean;
+
+	constructor(code: RuntimeCatalogConflictCode, message: string) {
+		super(message);
+		this.name = 'RuntimeCatalogConflictError';
+		this.code = code;
+		this.retryable = code === 'RUNTIME_CATALOG_PINS_CHANGED';
+	}
+}
+
 export interface SecondBrainBootstrap {
 	runtime: SecondBrainRuntime;
 	approvalBroker: OneTimeHumanApprovalBroker;
@@ -67,7 +95,7 @@ export interface SecondBrainBootstrap {
 	embeddingAdapter: EmbeddingAdapter;
 	reranker?: RerankerAdapter;
 	transmissionReviewMode: TransmissionReviewMode;
-	/** True only after the operator explicitly trusts MCP App isolation for approval. */
+	/** True only after trusted MCP App opt-in and at least one writable source are both present. */
 	controlledWritesEnabled: boolean;
 }
 
@@ -93,6 +121,8 @@ interface RuntimeCatalogSource {
 interface RuntimeCatalogMaterial {
 	schemaVersion: typeof RUNTIME_CATALOG_SCHEMA_VERSION;
 	createdAt: string;
+	/** Hash-only fence for the complete trusted offline deployment configuration. */
+	deploymentConfigSha256: string;
 	embedding: {
 		adapterId: string;
 		modelId: string;
@@ -357,7 +387,7 @@ export async function loadSecondBrainBuildConfiguration(
 	environment: NodeJS.ProcessEnv = process.env,
 ): Promise<SecondBrainBuildConfiguration> {
 	const knowledgeConfig = await loadKnowledgeServiceConfig(environment);
-	const runtimeCatalogPath = resolveSecondBrainRuntimeCatalogPath(environment);
+	const runtimeCatalogPath = await resolveSecondBrainRuntimeCatalogPath(environment);
 	await assertOutsideGitWorktree(runtimeCatalogPath, 'Runtime catalog');
 	for (const source of knowledgeConfig.sources) {
 		if (pathsOverlap(runtimeCatalogPath, source.vaultPath)) {
@@ -378,7 +408,7 @@ export async function loadSecondBrainBuildConfiguration(
 	});
 	const principal = loadPrincipalPolicy(environment, sources.map((source) => source.descriptor));
 	const writeStateRoot = sources.some((source) => source.descriptor.writable !== undefined)
-		? resolveWriteStateRoot(environment, sources)
+		? await resolveWriteStateRoot(environment, sources)
 		: undefined;
 	if (writeStateRoot !== undefined) {
 		await assertOutsideGitWorktree(
@@ -415,31 +445,42 @@ async function assertOutsideGitWorktree(candidatePath: string, label: string): P
 export async function createSecondBrainBootstrap(
 	environment: NodeJS.ProcessEnv = process.env,
 ): Promise<SecondBrainBootstrap> {
-	const runtimeCatalogPath = resolveSecondBrainRuntimeCatalogPath(environment);
+	const runtimeCatalogPath = await resolveSecondBrainRuntimeCatalogPath(environment);
 	const catalog = await readSecondBrainRuntimeCatalog(runtimeCatalogPath);
+	await assertRuntimeCatalogStorageBoundaries(runtimeCatalogPath, catalog);
 	const embeddingAdapter = loadSecondBrainEmbeddingAdapter(environment);
 	assertEmbeddingMatchesCatalog(embeddingAdapter, catalog);
 	const reranker = loadSecondBrainReranker(environment);
-	const controlledWritesEnabled = readMcpWriteApprovalMode(environment) === 'trusted-mcp-app';
+	const trustedWriteApprovalEnabled = readMcpWriteApprovalMode(environment) === 'trusted-mcp-app';
 	const sources = catalog.sources.map((source) => sourceFromRuntimeCatalog(
 		source,
 		embeddingAdapter,
-		controlledWritesEnabled,
+		trustedWriteApprovalEnabled,
 	));
+	const sourceBindingChecksums = new Map(catalog.sources.map((source) => [
+		source.sourceId,
+		runtimeCatalogSourceBindingChecksum(catalog, source.sourceId),
+	]));
 	const principal = loadPrincipalPolicy(environment, sources);
 	const approvalBroker = new OneTimeHumanApprovalBroker();
 	const hasWritable = sources.some((source) => source.writable !== undefined);
+	const controlledWritesEnabled = trustedWriteApprovalEnabled && hasWritable;
 	let catalogUpdateTail: Promise<void> = Promise.resolve();
 	const persistGenerationPin = async (
 		sourceId: string,
 		generationId: string,
 		manifestSha256: string,
+		expectedGenerationId: string,
+		expectedManifestSha256: string,
 	): Promise<void> => {
 		const update = async (): Promise<void> => updateRuntimeCatalogGenerationPin(
 			runtimeCatalogPath,
 			sourceId,
 			generationId,
 			manifestSha256,
+			expectedGenerationId,
+			expectedManifestSha256,
+			requireSourceBindingChecksum(sourceBindingChecksums, sourceId),
 		);
 		const task = catalogUpdateTail.then(update, update);
 		catalogUpdateTail = task.then(() => undefined, () => undefined);
@@ -476,6 +517,60 @@ export async function createSecondBrainBootstrap(
 	};
 }
 
+async function assertRuntimeCatalogStorageBoundaries(
+	runtimeCatalogPath: string,
+	catalog: RuntimeCatalogMaterial,
+): Promise<void> {
+	const canonicalCatalogPath = await canonicalizePotentialPath(runtimeCatalogPath);
+	await assertOutsideGitWorktree(canonicalCatalogPath, 'Runtime catalog');
+	const writableSourceRoots = await Promise.all(catalog.sources.flatMap((source) => (
+		source.writable === undefined
+			? []
+			: [canonicalizePotentialPath(source.writable.sourceRoot)]
+	)));
+	const storagePaths: Array<{ path: string; label: string }> = [];
+	for (const source of catalog.sources) {
+		storagePaths.push({
+			path: await canonicalizePotentialPath(source.generationRoot),
+			label: 'Compiled generation state',
+		});
+		if (source.writable !== undefined) {
+			storagePaths.push(
+				{
+					path: await canonicalizePotentialPath(source.writable.compilerStateRoot),
+					label: 'Compiler state',
+				},
+				{
+					path: await canonicalizePotentialPath(source.writable.writerStateRoot),
+					label: 'Writer state',
+				},
+			);
+		}
+	}
+	if (catalog.writeStateRoot !== undefined) {
+		storagePaths.push({
+			path: await canonicalizePotentialPath(catalog.writeStateRoot),
+			label: 'Controlled write state',
+		});
+	}
+	for (const storage of storagePaths) {
+		await assertOutsideGitWorktree(
+			path.join(storage.path, '.private-state-sentinel'),
+			storage.label,
+		);
+		for (const sourceRoot of writableSourceRoots) {
+			if (pathsOverlap(storage.path, sourceRoot)) {
+				throw new Error(`${storage.label} must be outside every writable source.`);
+			}
+		}
+	}
+	for (const sourceRoot of writableSourceRoots) {
+		if (pathsOverlap(canonicalCatalogPath, sourceRoot)) {
+			throw new Error('Runtime catalog must be outside every writable source.');
+		}
+	}
+}
+
 export function readMcpWriteApprovalMode(
 	environment: NodeJS.ProcessEnv = process.env,
 ): 'disabled' | 'trusted-mcp-app' {
@@ -494,21 +589,23 @@ export function readMcpWriteApprovalMode(
  */
 export async function publishSecondBrainRuntimeCatalog(
 	configuration: SecondBrainBuildConfiguration,
+	pins: readonly SecondBrainGenerationPin[],
+	expectedCatalogSha256: string | null,
 ): Promise<void> {
+	const deploymentConfigSha256 = runtimeCatalogDeploymentConfigSha256(configuration);
+	const pinsBySourceId = resolveExactGenerationPins(configuration, pins);
 	const sources: RuntimeCatalogSource[] = [];
 	for (const source of configuration.sources) {
-		const generation = await source.compiler.readCurrent();
-		if (generation === null) {
-			throw new Error('Every runtime catalog source requires a READY generation.');
-		}
 		const descriptor = source.descriptor;
+		const pin = pinsBySourceId.get(descriptor.sourceId);
+		if (!pin) throw new Error('Every runtime catalog source requires an exact generation pin.');
 		const base: RuntimeCatalogSource = {
 			sourceId: descriptor.sourceId,
 			label: descriptor.label,
 			kind: descriptor.kind,
 			generationRoot: descriptor.generationRoot,
-			generationId: generation.generationId,
-			manifestSha256: generation.manifestSha256,
+			generationId: pin.generationId,
+			manifestSha256: pin.manifestSha256,
 			...(descriptor.projectId === undefined ? {} : { projectId: descriptor.projectId }),
 		};
 		if (descriptor.writable === undefined) {
@@ -532,6 +629,7 @@ export async function publishSecondBrainRuntimeCatalog(
 	const catalog: RuntimeCatalogMaterial = {
 		schemaVersion: RUNTIME_CATALOG_SCHEMA_VERSION,
 		createdAt: new Date().toISOString(),
+		deploymentConfigSha256,
 		embedding: {
 			adapterId: configuration.embeddingAdapter.id,
 			modelId: configuration.embeddingAdapter.modelId,
@@ -544,24 +642,135 @@ export async function publishSecondBrainRuntimeCatalog(
 			: { writeStateRoot: configuration.writeStateRoot }),
 	};
 	validateRuntimeCatalog(catalog);
-	await atomicWritePrivateJson(configuration.runtimeCatalogPath, {
-		catalog,
-		sha256: sha256(canonicalJson(catalog)),
+	await withPrivateDirectoryLock(runtimeCatalogLockPath(configuration.runtimeCatalogPath), async () => {
+		const current = await readSecondBrainRuntimeCatalogEnvelope(
+			configuration.runtimeCatalogPath,
+			true,
+		);
+		if (current !== null && sameRuntimeCatalogSnapshot(current.catalog, catalog)) return;
+		// The first successful publication owns this catalog path's deployment
+		// binding. A later compiler may advance only generation pins for that exact
+		// source/embedding/writer configuration. Otherwise two long-lived watchers
+		// with different configurations could each accept the other's checksum as a
+		// fresh baseline on the next round and oscillate the online authorization
+		// boundary forever. Reconfiguration therefore requires stopping publishers
+		// and selecting a new catalog path (or removing the old private derived
+		// catalog as an explicit offline migration).
+		if (current !== null && !sameRuntimeCatalogBinding(current.catalog, catalog)) {
+			throw new RuntimeCatalogConflictError(
+				'RUNTIME_CATALOG_BINDING_CHANGED',
+				'Runtime catalog binding is owned by another deployment configuration.',
+			);
+		}
+		if ((current?.sha256 ?? null) !== expectedCatalogSha256) {
+			throw new RuntimeCatalogConflictError(
+				current !== null
+					? 'RUNTIME_CATALOG_PINS_CHANGED'
+					: 'RUNTIME_CATALOG_BINDING_CHANGED',
+				current !== null
+					? 'Runtime catalog pins changed during offline compilation; retry from the new snapshot.'
+					: 'Runtime catalog presence changed during offline compilation; refusing a stale publication.',
+			);
+		}
+		await atomicWritePrivateJson(configuration.runtimeCatalogPath, {
+			catalog,
+			sha256: sha256(canonicalJson(catalog)),
+		});
 	});
+}
+
+function sameRuntimeCatalogSnapshot(
+	first: RuntimeCatalogMaterial,
+	second: RuntimeCatalogMaterial,
+): boolean {
+	const { createdAt: _firstCreatedAt, ...firstSnapshot } = first;
+	const { createdAt: _secondCreatedAt, ...secondSnapshot } = second;
+	return canonicalJson(firstSnapshot) === canonicalJson(secondSnapshot);
+}
+
+function sameRuntimeCatalogBinding(
+	first: RuntimeCatalogMaterial,
+	second: RuntimeCatalogMaterial,
+): boolean {
+	return canonicalJson(runtimeCatalogBindingSnapshot(first))
+		=== canonicalJson(runtimeCatalogBindingSnapshot(second));
+}
+
+function runtimeCatalogBindingSnapshot(catalog: RuntimeCatalogMaterial): object {
+	return {
+		schemaVersion: catalog.schemaVersion,
+		deploymentConfigSha256: catalog.deploymentConfigSha256,
+		embedding: catalog.embedding,
+		sources: catalog.sources.map(({ generationId: _generationId, manifestSha256: _manifest, ...source }) => (
+			source
+		)),
+		...(catalog.writeStateRoot === undefined ? {} : { writeStateRoot: catalog.writeStateRoot }),
+	};
+}
+
+function runtimeCatalogDeploymentConfigSha256(
+	configuration: SecondBrainBuildConfiguration,
+): string {
+	const sources = configuration.sources.map((source) => {
+		const artifactPath = source.config.artifactPath;
+		if (!artifactPath) throw new Error('Compiled deployment source is missing artifact storage.');
+		const descriptor = source.descriptor;
+		const privateRoot = path.join(path.resolve(artifactPath), 'second-brain-v1');
+		return {
+			sourceId: descriptor.sourceId,
+			label: descriptor.label,
+			kind: descriptor.kind,
+			projectId: descriptor.projectId ?? null,
+			// Source roots are intentionally reduced to the final digest below. The
+			// catalog never gains a locator for a read-only source.
+			sourceRoot: path.resolve(source.config.vaultPath),
+			generationRoot: path.resolve(descriptor.generationRoot),
+			compilerPolicySha256: source.compiler.policyHash,
+			writable: descriptor.writable === undefined
+				? null
+				: {
+					adapterId: descriptor.writable.adapter.adapterId,
+					compilerStateRoot: path.join(privateRoot, 'compiler-state'),
+					writerStateRoot: path.join(privateRoot, 'writer-state'),
+					maximumWriterFileBytes: source.config.maxFileCharacters,
+				},
+		};
+	}).sort((first, second) => (
+		first.sourceId < second.sourceId ? -1 : first.sourceId > second.sourceId ? 1 : 0
+	));
+	return sha256(canonicalJson({
+		schemaVersion: RUNTIME_CATALOG_SCHEMA_VERSION,
+		embedding: {
+			adapterId: configuration.embeddingAdapter.id,
+			modelId: configuration.embeddingAdapter.modelId,
+			kind: configuration.embeddingAdapter.kind,
+			dimension: configuration.embeddingAdapter.dimension,
+		},
+		sources,
+		writeStateRoot: configuration.writeStateRoot === undefined
+			? null
+			: path.resolve(configuration.writeStateRoot),
+	}));
 }
 
 /** Builds a complete query view before the catalog pointer becomes visible. */
 export async function validateSecondBrainBuildArtifacts(
 	configuration: SecondBrainBuildConfiguration,
+	pins: readonly SecondBrainGenerationPin[],
 ): Promise<void> {
+	const pinsBySourceId = resolveExactGenerationPins(configuration, pins);
 	await SecondBrainRuntime.open({
 		sources: configuration.sources.map((source) => {
 			const descriptor = source.descriptor;
+			const pin = pinsBySourceId.get(descriptor.sourceId);
+			if (!pin) throw new Error('Every compiled source requires an exact generation pin.');
 			return {
 				sourceId: descriptor.sourceId,
 				label: descriptor.label,
 				kind: descriptor.kind,
 				generationRoot: descriptor.generationRoot,
+				pinnedGenerationId: pin.generationId,
+				pinnedManifestSha256: pin.manifestSha256,
 				...(descriptor.projectId === undefined ? {} : { projectId: descriptor.projectId }),
 			};
 		}),
@@ -570,15 +779,125 @@ export async function validateSecondBrainBuildArtifacts(
 	});
 }
 
-export function resolveSecondBrainRuntimeCatalogPath(
-	environment: NodeJS.ProcessEnv = process.env,
+export async function readSecondBrainRuntimeCatalogChecksum(
+	catalogPath: string,
+): Promise<string | null> {
+	return (await readSecondBrainRuntimeCatalogEnvelope(catalogPath, true))?.sha256 ?? null;
+}
+
+/**
+ * Reads a publication baseline only when the existing catalog belongs to this
+ * complete trusted build configuration. This runs before source compilation so
+ * a differently configured watcher cannot advance shared physical generations
+ * and only discover the conflict at final catalog publication.
+ */
+export async function readSecondBrainRuntimeCatalogChecksumForConfiguration(
+	configuration: SecondBrainBuildConfiguration,
+): Promise<string | null> {
+	const envelope = await readSecondBrainRuntimeCatalogEnvelope(
+		configuration.runtimeCatalogPath,
+		true,
+	);
+	if (
+		envelope !== null
+		&& envelope.catalog.deploymentConfigSha256
+			!== runtimeCatalogDeploymentConfigSha256(configuration)
+	) {
+		throw new RuntimeCatalogConflictError(
+			'RUNTIME_CATALOG_BINDING_CHANGED',
+			'Runtime catalog binding is owned by another deployment configuration.',
+		);
+	}
+	return envelope?.sha256 ?? null;
+}
+
+/** @internal Test/coordination seam for source-binding compare-and-swap. */
+export async function readSecondBrainRuntimeCatalogSourceBindingChecksum(
+	catalogPath: string,
+	sourceId: string,
+): Promise<string> {
+	if (!SOURCE_ID_PATTERN.test(sourceId)) throw new Error('Runtime catalog source binding is invalid.');
+	const catalog = await readSecondBrainRuntimeCatalog(catalogPath);
+	return runtimeCatalogSourceBindingChecksum(catalog, sourceId);
+}
+
+function runtimeCatalogSourceBindingChecksum(
+	catalog: RuntimeCatalogMaterial,
+	sourceId: string,
 ): string {
+	const source = catalog.sources.find((candidate) => candidate.sourceId === sourceId);
+	if (!source) throw new Error('Runtime catalog source binding is missing.');
+	const {
+		generationId: _generationId,
+		manifestSha256: _manifestSha256,
+		...sourceBinding
+	} = source;
+	return sha256(canonicalJson({
+		schemaVersion: catalog.schemaVersion,
+		deploymentConfigSha256: catalog.deploymentConfigSha256,
+		embedding: catalog.embedding,
+		writeStateRoot: catalog.writeStateRoot ?? null,
+		source: sourceBinding,
+	}));
+}
+
+function requireSourceBindingChecksum(
+	checksums: ReadonlyMap<string, string>,
+	sourceId: string,
+): string {
+	const checksum = checksums.get(sourceId);
+	if (!checksum) throw new Error('Runtime catalog source binding is missing.');
+	return checksum;
+}
+
+function resolveExactGenerationPins(
+	configuration: SecondBrainBuildConfiguration,
+	pins: readonly SecondBrainGenerationPin[],
+): ReadonlyMap<string, SecondBrainGenerationPin> {
+	if (!Array.isArray(pins) || pins.length !== configuration.sources.length) {
+		throw new Error('Runtime catalog generation pins must exactly cover every configured source.');
+	}
+	const configuredSourceIds = new Set<string>(
+		configuration.sources.map((source) => source.descriptor.sourceId),
+	);
+	const resolved = new Map<string, SecondBrainGenerationPin>();
+	for (const pin of pins) {
+		if (
+			!isRecord(pin)
+			|| typeof pin.sourceId !== 'string'
+			|| !configuredSourceIds.has(pin.sourceId)
+			|| resolved.has(pin.sourceId)
+			|| typeof pin.generationId !== 'string'
+			|| !GENERATION_ID_PATTERN.test(pin.generationId)
+			|| typeof pin.manifestSha256 !== 'string'
+			|| !SHA256_PATTERN.test(pin.manifestSha256)
+		) throw new Error('Runtime catalog generation pins are invalid, duplicated, or out of scope.');
+		resolved.set(pin.sourceId, {
+			sourceId: pin.sourceId,
+			generationId: pin.generationId,
+			manifestSha256: pin.manifestSha256,
+		});
+	}
+	return resolved;
+}
+
+function runtimeCatalogLockPath(catalogPath: string): string {
+	const resolved = safeNonRootPath(catalogPath, 'Runtime catalog');
+	return path.join(path.dirname(resolved), `.${path.basename(resolved)}.lock`);
+}
+
+export async function resolveSecondBrainRuntimeCatalogPath(
+	environment: NodeJS.ProcessEnv = process.env,
+): Promise<string> {
 	const explicit = optionalEnvironmentValue(environment.OBSIDIAN_SECOND_BRAIN_CATALOG_PATH);
 	if (explicit !== undefined) {
 		if (!path.isAbsolute(explicit)) {
 			throw new Error('OBSIDIAN_SECOND_BRAIN_CATALOG_PATH must be absolute.');
 		}
-		return safeNonRootPath(explicit, 'Runtime catalog');
+		return safeNonRootPath(
+			await canonicalizePotentialPath(explicit),
+			'Runtime catalog',
+		);
 	}
 	const artifactRoot = optionalEnvironmentValue(environment.OBSIDIAN_ARTIFACT_PATH);
 	if (artifactRoot === undefined || !path.isAbsolute(artifactRoot)) {
@@ -587,7 +906,9 @@ export function resolveSecondBrainRuntimeCatalogPath(
 		);
 	}
 	return safeNonRootPath(
-		path.join(artifactRoot, 'second-brain-v1', 'runtime-catalog.json'),
+		await canonicalizePotentialPath(
+			path.join(artifactRoot, 'second-brain-v1', 'runtime-catalog.json'),
+		),
 		'Runtime catalog',
 	);
 }
@@ -692,6 +1013,15 @@ function sourceFromRuntimeCatalog(
 }
 
 async function readSecondBrainRuntimeCatalog(catalogPath: string): Promise<RuntimeCatalogMaterial> {
+	const envelope = await readSecondBrainRuntimeCatalogEnvelope(catalogPath, false);
+	if (envelope === null) throw new Error('Compiled runtime catalog is missing; run the offline compiler first.');
+	return envelope.catalog;
+}
+
+async function readSecondBrainRuntimeCatalogEnvelope(
+	catalogPath: string,
+	allowMissing: boolean,
+): Promise<RuntimeCatalogEnvelope | null> {
 	let bytes: Buffer;
 	try {
 		bytes = await readPrivateFile(catalogPath, {
@@ -701,6 +1031,7 @@ async function readSecondBrainRuntimeCatalog(catalogPath: string): Promise<Runti
 		});
 	} catch (error) {
 		if (isNodeError(error, 'ENOENT')) {
+			if (allowMissing) return null;
 			throw new Error('Compiled runtime catalog is missing; run the offline compiler first.');
 		}
 		throw new Error('Compiled runtime catalog could not be opened or validated safely.', {
@@ -723,17 +1054,22 @@ async function readSecondBrainRuntimeCatalog(catalogPath: string): Promise<Runti
 		throw new Error('Compiled runtime catalog checksum mismatch.');
 	}
 	validateRuntimeCatalog(decoded.catalog);
-	return structuredClone(decoded.catalog);
+	return {
+		catalog: structuredClone(decoded.catalog),
+		sha256: decoded.sha256,
+	};
 }
 
 function validateRuntimeCatalog(value: unknown): asserts value is RuntimeCatalogMaterial {
 	if (!isRecord(value) || !hasOnlyKeys(value, [
-		'schemaVersion', 'createdAt', 'embedding', 'sources', 'writeStateRoot',
+		'schemaVersion', 'createdAt', 'deploymentConfigSha256', 'embedding', 'sources', 'writeStateRoot',
 	])) throw new Error('Compiled runtime catalog fields are invalid.');
 	if (
 		value.schemaVersion !== RUNTIME_CATALOG_SCHEMA_VERSION
 		|| typeof value.createdAt !== 'string'
 		|| Number.isNaN(Date.parse(value.createdAt))
+		|| typeof value.deploymentConfigSha256 !== 'string'
+		|| !SHA256_PATTERN.test(value.deploymentConfigSha256)
 		|| !isRecord(value.embedding)
 		|| !hasExactKeys(value.embedding, ['adapterId', 'modelId', 'kind', 'dimension'])
 		|| typeof value.embedding.adapterId !== 'string'
@@ -806,29 +1142,59 @@ function validateRuntimeCatalog(value: unknown): asserts value is RuntimeCatalog
 	}
 }
 
-async function updateRuntimeCatalogGenerationPin(
+export async function updateRuntimeCatalogGenerationPin(
 	catalogPath: string,
 	sourceId: string,
 	generationId: string,
 	manifestSha256: string,
+	expectedGenerationId: string,
+	expectedManifestSha256: string,
+	expectedSourceBindingSha256: string,
 ): Promise<void> {
 	if (!SOURCE_ID_PATTERN.test(sourceId)) throw new Error('Runtime catalog source pin is invalid.');
-	if (!/^gen-[0-9]{13}-[a-f0-9]{32}$/u.test(generationId)) {
+	if (!GENERATION_ID_PATTERN.test(generationId)) {
 		throw new Error('Runtime catalog generation pin is invalid.');
 	}
-	if (!/^[a-f0-9]{64}$/u.test(manifestSha256)) {
+	if (!SHA256_PATTERN.test(manifestSha256)) {
 		throw new Error('Runtime catalog manifest pin is invalid.');
 	}
-	const catalog = await readSecondBrainRuntimeCatalog(catalogPath);
-	const source = catalog.sources.find((candidate) => candidate.sourceId === sourceId);
-	if (!source?.writable) throw new Error('Runtime catalog source is not writable.');
-	source.generationId = generationId;
-	source.manifestSha256 = manifestSha256;
-	catalog.createdAt = new Date().toISOString();
-	validateRuntimeCatalog(catalog);
-	await atomicWritePrivateJson(catalogPath, {
-		catalog,
-		sha256: sha256(canonicalJson(catalog)),
+	if (!GENERATION_ID_PATTERN.test(expectedGenerationId)) {
+		throw new Error('Expected runtime catalog generation pin is invalid.');
+	}
+	if (!SHA256_PATTERN.test(expectedManifestSha256)) {
+		throw new Error('Expected runtime catalog manifest pin is invalid.');
+	}
+	if (!SHA256_PATTERN.test(expectedSourceBindingSha256)) {
+		throw new Error('Expected runtime catalog source binding is invalid.');
+	}
+	await withPrivateDirectoryLock(runtimeCatalogLockPath(catalogPath), async () => {
+		const catalog = await readSecondBrainRuntimeCatalog(catalogPath);
+		const source = catalog.sources.find((candidate) => candidate.sourceId === sourceId);
+		if (!source?.writable) throw new Error('Runtime catalog source is not writable.');
+		if (runtimeCatalogSourceBindingChecksum(catalog, sourceId) !== expectedSourceBindingSha256) {
+			throw new RuntimeCatalogConflictError(
+				'RUNTIME_CATALOG_SOURCE_BINDING_CHANGED',
+				'Runtime catalog source binding changed before publication.',
+			);
+		}
+		if (source.generationId === generationId && source.manifestSha256 === manifestSha256) return;
+		if (
+			source.generationId !== expectedGenerationId
+			|| source.manifestSha256 !== expectedManifestSha256
+		) {
+			throw new RuntimeCatalogConflictError(
+				'RUNTIME_CATALOG_SOURCE_PIN_CHANGED',
+				'Runtime catalog source pin changed before publication.',
+			);
+		}
+		source.generationId = generationId;
+		source.manifestSha256 = manifestSha256;
+		catalog.createdAt = new Date().toISOString();
+		validateRuntimeCatalog(catalog);
+		await atomicWritePrivateJson(catalogPath, {
+			catalog,
+			sha256: sha256(canonicalJson(catalog)),
+		});
 	});
 }
 
@@ -987,17 +1353,19 @@ function loadPrincipalPolicy(
 	};
 }
 
-function resolveWriteStateRoot(
+async function resolveWriteStateRoot(
 	environment: NodeJS.ProcessEnv,
 	sources: readonly ConfiguredSecondBrainSource[],
-): string {
+): Promise<string> {
 	const configured = optionalEnvironmentValue(environment.OBSIDIAN_SECOND_BRAIN_WRITE_STATE_PATH);
 	if (configured !== undefined && !path.isAbsolute(configured)) {
 		throw new Error('OBSIDIAN_SECOND_BRAIN_WRITE_STATE_PATH must be absolute.');
 	}
 	const firstArtifact = sources[0]?.config.artifactPath;
 	if (!firstArtifact) throw new Error('Writable sources require persistent artifact storage.');
-	const candidate = path.resolve(configured ?? path.join(firstArtifact, 'second-brain-v1', 'runtime-write-state'));
+	const candidate = await canonicalizePotentialPath(
+		configured ?? path.join(firstArtifact, 'second-brain-v1', 'runtime-write-state'),
+	);
 	if (candidate === path.parse(candidate).root) throw new Error('Write state cannot be a filesystem root.');
 	for (const source of sources) {
 		if (pathsOverlap(candidate, source.config.vaultPath)) {
@@ -1005,6 +1373,23 @@ function resolveWriteStateRoot(
 		}
 	}
 	return candidate;
+}
+
+async function canonicalizePotentialPath(candidate: string): Promise<string> {
+	let existing = path.resolve(candidate);
+	const missingSegments: string[] = [];
+	for (;;) {
+		try {
+			const canonical = await realpath(existing);
+			return path.join(canonical, ...missingSegments.reverse());
+		} catch (error) {
+			if (!isNodeError(error, 'ENOENT')) throw error;
+			const parent = path.dirname(existing);
+			if (parent === existing) throw error;
+			missingSegments.push(path.basename(existing));
+			existing = parent;
+		}
+	}
 }
 
 function loadApprovalSecret(environment: NodeJS.ProcessEnv): Uint8Array {

@@ -52,6 +52,11 @@ test('compact postings round-trip and delta deletion propagates before compactio
 				{ ordinal: 0, documentLength: 1, termFrequencies: new Map([['gamma', 1]]) },
 			]),
 		}],
+		chunkIndex: {
+			schemaVersion: COMPILED_ARTIFACT_SCHEMA_VERSION,
+			records: [],
+			index: buildCompactPostingIndex([]),
+		},
 	};
 	const materialized = materializeLexicalArtifact(artifact);
 	assert.equal(materialized.postings.has('alpha'), false);
@@ -138,6 +143,37 @@ test('build state persists checksummed per-file checkpoints and a verifiable com
 	});
 });
 
+test('build-state lock invalidates each instance journal cache before alternating appends', async () => {
+	await withTemporaryRoot(async (root) => {
+		const first = new BuildStateStore(root);
+		const second = new BuildStateStore(root);
+		// Prime both process-local caches before either writer changes the journal.
+		assert.deepEqual(await first.readJournal(), []);
+		assert.deepEqual(await second.readJournal(), []);
+
+		const stores = [first, second, first, second];
+		for (const [index, store] of stores.entries()) {
+			await store.withBuildLock(async () => {
+				await store.appendJournal({
+					timestamp: `2026-09-15T00:00:0${index}.000Z`,
+					event: index === 0 ? 'scan-started' : 'file-compiled',
+					buildId: 'alternating-writers',
+					path: index === 0 ? null : `${index}.md`,
+					contentSha256: index === 0 ? null : String(index).repeat(64),
+					generationId: null,
+				});
+			});
+		}
+
+		const journal = await new BuildStateStore(root).readJournal();
+		assert.deepEqual(journal.map((record) => record.sequence), [1, 2, 3, 4]);
+		assert.equal(journal[0]?.previousHash, null);
+		for (let index = 1; index < journal.length; index += 1) {
+			assert.equal(journal[index]?.previousHash, journal[index - 1]?.entryHash);
+		}
+	});
+});
+
 test('build state rejects non-private modes and hard-linked sensitive files on POSIX', async (context) => {
 	if (process.platform === 'win32') {
 		context.skip('POSIX ownership and mode enforcement is outside the Windows portable-fs boundary.');
@@ -202,7 +238,16 @@ function emptyBundleInput(label: string): ArtifactBundleInput {
 				nextOrdinal: 0,
 				entries: [],
 			},
-			lexical: { schemaVersion: COMPILED_ARTIFACT_SCHEMA_VERSION, base, deltas: [] },
+			lexical: {
+				schemaVersion: COMPILED_ARTIFACT_SCHEMA_VERSION,
+				base,
+				deltas: [],
+				chunkIndex: {
+					schemaVersion: COMPILED_ARTIFACT_SCHEMA_VERSION,
+					records: [],
+					index: buildCompactPostingIndex([]),
+				},
+			},
 			derived: { schemaVersion: COMPILED_ARTIFACT_SCHEMA_VERSION, documents: [] },
 			temporal: { schemaVersion: COMPILED_ARTIFACT_SCHEMA_VERSION, byOrdinal: [] },
 			hierarchy: { schemaVersion: COMPILED_ARTIFACT_SCHEMA_VERSION, byOrdinal: [] },

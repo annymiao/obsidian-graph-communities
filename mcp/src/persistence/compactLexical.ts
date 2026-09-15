@@ -152,6 +152,7 @@ export function compactLexicalArtifact(
 		schemaVersion: artifact.schemaVersion,
 		base: buildCompactPostingIndex(materializedToInputs(materialized)),
 		deltas: [],
+		chunkIndex: artifact.chunkIndex,
 	};
 }
 

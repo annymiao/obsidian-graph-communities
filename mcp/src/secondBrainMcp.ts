@@ -28,15 +28,23 @@ import {
 import {
 	collectTransmissionReview,
 	getTransmissionReviewDraft,
+	MAX_TRANSMISSION_REVIEW_BYTES,
 	startTransmissionReview,
 	submitTransmissionReview,
 } from './transmissionReview.js';
+import {
+	CORE_WRITE_CAPABILITIES,
+	createWriteCapabilityManifest,
+} from './adapters/capabilities.js';
 
 export const SECOND_BRAIN_MCP_VERSION = '1.3.0';
 const MODES = ['default', 'project', 'reference', 'history'] as const;
 const LOCAL_HUMAN_REVIEWER = 'local-human:mcp-app';
 const DEFAULT_PENDING_REVIEW_TTL_MS = 10 * 60_000;
 const DEFAULT_PENDING_REVIEW_CAPACITY = 64;
+const SECOND_BRAIN_SERVER_ID = 'obsidian-second-brain';
+/** End-to-end MCP proposal limit; the core Runtime API may use a different trusted UI limit. */
+export const SECOND_BRAIN_MCP_MAX_PROPOSAL_BYTES = 256 * 1024;
 
 export interface SecondBrainMcpOptions {
 	transport: KnowledgeTransport;
@@ -53,6 +61,7 @@ export interface SecondBrainMcpOptions {
 interface PendingWriteUiReview {
 	reviewId: string;
 	bindingHash: string;
+	approvalDocument: string;
 	action: 'write' | 'rollback';
 	collecting: boolean;
 	expiresAt: number;
@@ -100,9 +109,14 @@ export function createSecondBrainMcpServer(
 		),
 		now: options.now ?? Date.now,
 	};
-	const controlledWritesEnabled = options.controlledWritesEnabled === true;
+	const trustedWriteOptIn = options.controlledWritesEnabled === true;
+	const writableSourceIds = runtime.status(principal).sources
+		.filter((source) => source.writable)
+		.map((source) => source.sourceId)
+		.sort((first, second) => first.localeCompare(second));
+	const controlledWritesEnabled = trustedWriteOptIn && writableSourceIds.length > 0;
 	const server = new McpServer(
-		{ name: 'obsidian-second-brain', version: SECOND_BRAIN_MCP_VERSION },
+		{ name: SECOND_BRAIN_SERVER_ID, version: SECOND_BRAIN_MCP_VERSION },
 		{ instructions: serverInstructions(queryReviewRequired, controlledWritesEnabled) },
 	);
 	const readOnlyAnnotations = {
@@ -171,10 +185,24 @@ export function createSecondBrainMcpServer(
 	);
 
 	server.registerTool(
+		'get_second_brain_capabilities',
+		{
+			title: 'Get second-brain interface capabilities',
+			description: 'Return provider-neutral interfaces and source-level controlled-write eligibility; every path is authorized again per request.',
+			inputSchema: {},
+			annotations: readOnlyAnnotations,
+		},
+		async () => toolJson(createMcpCapabilityManifest({
+			trustedWriteOptIn,
+			writableSourceIds,
+		})),
+	);
+
+	server.registerTool(
 		'query_second_brain',
 		{
 			title: 'Query the compiled second brain',
-			description: 'Query immutable compiled artifacts with hybrid retrieval and a hard five-second deadline.',
+			description: 'Query immutable compiled artifacts under a maximum 5,000 ms cooperative budget; late success is suppressed.',
 			inputSchema: {
 				query: z.string().min(1).max(32_000),
 				mode: z.enum(MODES).optional(),
@@ -285,7 +313,7 @@ export function createSecondBrainMcpServer(
 				path: z.string().min(1).max(1_000),
 				operation: z.enum(['create', 'replace', 'delete']),
 				rationale: z.string().min(1).max(16_384),
-				after_content: z.string().max(8 * 1024 * 1024).nullable(),
+				after_content: z.string().max(SECOND_BRAIN_MCP_MAX_PROPOSAL_BYTES).nullable(),
 				model_provider: z.string().min(1).max(128).optional(),
 				model_name: z.string().min(1).max(160).optional(),
 			},
@@ -302,6 +330,7 @@ export function createSecondBrainMcpServer(
 			model_name,
 		}) => {
 			try {
+				assertMcpProposalBytes(after_content);
 				const review = await runtime.prepareWrite({
 					principal,
 					sourceId: source_id,
@@ -312,7 +341,7 @@ export function createSecondBrainMcpServer(
 					...(model_provider === undefined ? {} : { modelProvider: model_provider }),
 					...(model_name === undefined ? {} : { modelName: model_name }),
 				});
-				return await openWriteReview(review, pendingReviews);
+				return await openWriteReview(review, pendingReviews, runtime);
 			} catch (error) {
 				return toolError(error);
 			}
@@ -365,7 +394,7 @@ export function createSecondBrainMcpServer(
 					...(model_provider === undefined ? {} : { modelProvider: model_provider }),
 					...(model_name === undefined ? {} : { modelName: model_name }),
 				});
-				return await openWriteReview(review, pendingReviews);
+				return await openWriteReview(review, pendingReviews, runtime);
 			} catch (error) {
 				return toolError(error);
 			}
@@ -424,6 +453,7 @@ export function createSecondBrainMcpServer(
 							description: draft.description,
 							content: draft.content,
 							expires_at: draft.expiresAt,
+							...reviewPresentation(pendingReviews, review_id),
 						},
 					},
 				};
@@ -442,7 +472,7 @@ export function createSecondBrainMcpServer(
 				review_id: z.string().length(64),
 				ui_token: z.string().length(64),
 				action: z.enum(['approve', 'cancel']),
-				content: z.string().max(1_000_000).optional(),
+					content: z.string().max(MAX_TRANSMISSION_REVIEW_BYTES).optional(),
 			},
 			annotations: { ...prepareAnnotations, readOnlyHint: false },
 			_meta: appOnlyToolMeta,
@@ -453,12 +483,52 @@ export function createSecondBrainMcpServer(
 				if (!hasPendingReviewId(pendingReviews, review_id)) {
 					throw new PublicSecondBrainMcpError('Review is missing, expired, or already used.');
 				}
-				return toolJson(submitTransmissionReview(
+				const pendingWrite = findPendingWriteByReviewId(pendingReviews, review_id);
+				if (
+					action === 'approve'
+					&& pendingWrite !== null
+					&& content !== pendingWrite.review.approvalDocument
+				) {
+					submitTransmissionReview(review_id, ui_token, 'cancel');
+					pendingReviews.broker.stageDenial(
+						pendingWrite.preparedId,
+						pendingWrite.review.bindingHash,
+					);
+					pendingReviews.writes.delete(pendingWrite.preparedId);
+					await consumeDeniedRuntimeOperation({
+						runtime,
+						preparedId: pendingWrite.preparedId,
+						action: pendingWrite.review.action,
+					}).catch(() => undefined);
+					await collectTransmissionReview(review_id).catch(() => undefined);
+					throw new PublicSecondBrainMcpError(
+						'The controlled-operation review was edited; rebuild the proposal before trying again.',
+					);
+				}
+				const decision = submitTransmissionReview(
 					review_id,
 					ui_token,
 					action,
 					content ?? '',
-				));
+				);
+				if (action === 'cancel') {
+					if (pendingWrite !== null) {
+						pendingReviews.broker.stageDenial(
+							pendingWrite.preparedId,
+							pendingWrite.review.bindingHash,
+						);
+						pendingReviews.writes.delete(pendingWrite.preparedId);
+						await consumeDeniedRuntimeOperation({
+							runtime,
+							preparedId: pendingWrite.preparedId,
+							action: pendingWrite.review.action,
+						}).catch(() => undefined);
+					} else {
+						pendingReviews.queries.delete(review_id);
+					}
+					await collectTransmissionReview(review_id).catch(() => undefined);
+				}
+				return toolJson(decision);
 			} catch (error) {
 				return toolError(error);
 			}
@@ -471,11 +541,12 @@ export function createSecondBrainMcpServer(
 async function openWriteReview(
 	review: HumanApprovalReview,
 	pendingReviews: PendingReviewBindings,
+	runtime: SecondBrainRuntimeApi,
 ) {
-	prunePendingReviews(pendingReviews);
-	assertPendingReviewCapacity(pendingReviews);
-	const approvalDocument = pendingReviews.broker.registerReview(review);
 	try {
+		prunePendingReviews(pendingReviews);
+		assertPendingReviewCapacity(pendingReviews);
+		const approvalDocument = pendingReviews.broker.registerReview(review);
 		const ticket = await startTransmissionReview({
 			title: review.action === 'write' ? '第二大脑写入审核' : '第二大脑撤销审核',
 			description: '必须逐项核对。任何编辑都会拒绝本次操作，并要求重新生成建议。',
@@ -491,6 +562,7 @@ async function openWriteReview(
 		pendingReviews.writes.set(review.preparedId, {
 			reviewId: ticket.reviewId,
 			bindingHash: review.bindingHash,
+			approvalDocument,
 			action: review.action,
 			collecting: false,
 			expiresAt: Math.min(
@@ -525,6 +597,14 @@ async function openWriteReview(
 		};
 	} catch (error) {
 		pendingReviews.broker.stageDenial(review.preparedId, review.bindingHash);
+		// prepareWrite/prepareRollback already allocated a runtime pending entry.
+		// Consume that entry through the denied approval path so an oversized or
+		// otherwise unrenderable review cannot exhaust pending capacity.
+		await consumeDeniedRuntimeOperation({
+			runtime,
+			preparedId: review.preparedId,
+			action: review.action,
+		}).catch(() => undefined);
 		throw error;
 	}
 }
@@ -664,6 +744,79 @@ function hasPendingReviewId(pending: PendingReviewBindings, reviewId: string): b
 		if (review.reviewId === reviewId) return true;
 	}
 	return false;
+}
+
+function findPendingWriteByReviewId(
+	pending: PendingReviewBindings,
+	reviewId: string,
+): { preparedId: string; review: PendingWriteUiReview } | null {
+	for (const [preparedId, review] of pending.writes) {
+		if (review.reviewId === reviewId) return { preparedId, review };
+	}
+	return null;
+}
+
+function reviewPresentation(
+	pending: PendingReviewBindings,
+	reviewId: string,
+): { review_kind: 'controlled-write' | 'query'; editable: boolean } {
+	for (const review of pending.writes.values()) {
+		if (review.reviewId === reviewId) {
+			return { review_kind: 'controlled-write', editable: false };
+		}
+	}
+	if (pending.queries.has(reviewId)) return { review_kind: 'query', editable: true };
+	throw new PublicSecondBrainMcpError('Review is missing, expired, or already used.');
+}
+
+function createMcpCapabilityManifest(input: {
+	trustedWriteOptIn: boolean;
+	writableSourceIds: readonly string[];
+}) {
+	const controlledWriteEnabled = input.trustedWriteOptIn && input.writableSourceIds.length > 0;
+	return {
+		schemaVersion: 1 as const,
+		serverId: SECOND_BRAIN_SERVER_ID,
+		serverVersion: SECOND_BRAIN_MCP_VERSION,
+		providerNeutral: true as const,
+		providerIdentityAffectsAuthorization: false as const,
+		interfaces: {
+			mcp: { read: true as const, controlledWrite: controlledWriteEnabled },
+			localRuntimeApi: {
+				read: true as const,
+				controlledWrite: input.writableSourceIds.length > 0,
+			},
+			http: { read: true as const, controlledWrite: false as const },
+		},
+		controlledWrite: {
+			enabled: controlledWriteEnabled,
+			authorizationGranularity: 'source-level' as const,
+			pathAuthorization: 'per-request' as const,
+			state: controlledWriteEnabled
+				? 'enabled' as const
+				: input.trustedWriteOptIn
+					? 'no_writable_source' as const
+					: 'trusted_host_opt_in_required' as const,
+			trustedHostOptIn: input.trustedWriteOptIn,
+			writableSourceIds: [...input.writableSourceIds],
+			protocol: createWriteCapabilityManifest(SECOND_BRAIN_SERVER_ID, {
+				supported: controlledWriteEnabled ? [...CORE_WRITE_CAPABILITIES] : [],
+				maxProposalBytes: SECOND_BRAIN_MCP_MAX_PROPOSAL_BYTES,
+			}),
+			maximumPrivateReviewBytes: MAX_TRANSMISSION_REVIEW_BYTES,
+		},
+	};
+}
+
+function assertMcpProposalBytes(content: string | null): void {
+	if (
+		content !== null
+		&& Buffer.byteLength(content, 'utf8') > SECOND_BRAIN_MCP_MAX_PROPOSAL_BYTES
+	) {
+		throw new PublicSecondBrainMcpError(
+			`after_content exceeds the ${SECOND_BRAIN_MCP_MAX_PROPOSAL_BYTES}-byte MCP review limit.`,
+		);
+	}
 }
 
 function checkedNow(pending: PendingReviewBindings): number {

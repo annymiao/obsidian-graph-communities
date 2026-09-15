@@ -13,6 +13,7 @@ import {
 	TemporalRetriever,
 } from '../src/hybrid/index.js';
 import type {
+	Bm25Artifact,
 	EmbeddingAdapter,
 	HybridRecord,
 	HybridRetriever,
@@ -38,6 +39,62 @@ function record(id: string, overrides: Partial<HybridRecord> = {}): HybridRecord
 		...overrides,
 	};
 }
+
+test('persisted BM25 postings are version-bound and fail closed on coverage drift', async () => {
+	const records = [
+		record('first', { content: 'body without the indexed marker' }),
+		record('second', { content: 'another unrelated body' }),
+	];
+	const artifact: Bm25Artifact = {
+		schemaVersion: 1,
+		entries: [
+			{
+				recordId: 'first',
+				versionId: 'version-first',
+				documentLength: 3,
+				termFrequencies: [['artifactneedle', 3]],
+			},
+			{
+				recordId: 'second',
+				versionId: 'version-second',
+				documentLength: 2,
+				termFrequencies: [['unrelated', 2]],
+			},
+		],
+	};
+	const persisted = Bm25Retriever.fromArtifact(records, artifact);
+	assert.equal(await firstId(persisted, context(records, 'artifactneedle')), 'first');
+	assert.deepEqual(await new Bm25Retriever(records).retrieve(context(records, 'artifactneedle')), []);
+
+	assert.throws(
+		() => Bm25Retriever.fromArtifact(records, { ...artifact, entries: artifact.entries.slice(0, 1) }),
+		/Missing BM25 artifact record/u,
+	);
+	assert.throws(
+		() => Bm25Retriever.fromArtifact(records, {
+			...artifact,
+			entries: [
+				...artifact.entries,
+				{
+					recordId: 'extra',
+					versionId: 'version-extra',
+					documentLength: 1,
+					termFrequencies: [],
+				},
+			],
+		}),
+		/Extra BM25 artifact record/u,
+	);
+	assert.throws(
+		() => Bm25Retriever.fromArtifact(records, {
+			...artifact,
+			entries: artifact.entries.map((entry) => (
+				entry.recordId === 'first' ? { ...entry, versionId: 'stale-version' } : entry
+			)),
+		}),
+		/Stale BM25 artifact record/u,
+	);
+});
 
 function context(
 	records: readonly HybridRecord[],

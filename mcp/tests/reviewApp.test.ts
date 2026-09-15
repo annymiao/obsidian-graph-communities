@@ -16,5 +16,13 @@ test('renders a self-contained MCP App review panel', () => {
 	assert.match(html, /tools\/call/);
 	assert.match(html, /get_review_draft_for_ui/);
 	assert.match(html, /submit_review_decision_for_ui/);
+	assert.match(html, /assertToolSucceeded\(result\)/);
+	assert.match(html, /editable = draft\.editable !== false/);
+	assert.match(html, /reviewKind = draft\.review_kind === 'controlled-write'/);
+	assert.match(html, /content\.readOnly = !editable/);
+	assert.match(html, /本审核不可编辑/);
+	assert.match(html, /取消，不执行操作/);
+	assert.match(html, /未执行写入或撤销/);
+	assert.match(html, /可修改或删除任意内容/);
 	assert.doesNotMatch(html, /https?:\/\//);
 });

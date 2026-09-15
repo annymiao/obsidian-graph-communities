@@ -1,6 +1,6 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 
-const MAX_REVIEW_BYTES = 1_000_000;
+export const MAX_TRANSMISSION_REVIEW_BYTES = 1_000_000;
 const REVIEW_TIMEOUT_MS = 10 * 60 * 1_000;
 const REVIEW_RESULT_RETENTION_MS = 10 * 60 * 1_000;
 const MAX_ACTIVE_REVIEWS = 8;
@@ -76,7 +76,7 @@ export async function startTransmissionReview(
 	if (activeCount >= MAX_ACTIVE_REVIEWS) {
 		throw new Error('已有过多待处理的 Obsidian 审核面板；请先完成或取消其中一个。没有向 Codex 返回笔记内容。');
 	}
-	if (Buffer.byteLength(options.content, 'utf8') > MAX_REVIEW_BYTES) {
+	if (Buffer.byteLength(options.content, 'utf8') > MAX_TRANSMISSION_REVIEW_BYTES) {
 		throw new Error('审核内容超过允许大小；没有向 Codex 返回笔记内容。');
 	}
 
@@ -143,7 +143,7 @@ export function submitTransmissionReview(
 		if (!content.trim()) {
 			throw new Error('审核后的内容不能为空。');
 		}
-		if (Buffer.byteLength(content, 'utf8') > MAX_REVIEW_BYTES) {
+		if (Buffer.byteLength(content, 'utf8') > MAX_TRANSMISSION_REVIEW_BYTES) {
 			throw new Error('审核后的内容超过允许大小。');
 		}
 		stored.status = 'approved';

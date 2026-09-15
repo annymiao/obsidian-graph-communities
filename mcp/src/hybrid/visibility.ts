@@ -1,4 +1,9 @@
-import type { HybridRecord, HybridRetrievalScope, HybridVisibilityScope } from './types.js';
+import type {
+	HybridRecord,
+	HybridRetrievalScope,
+	HybridVisibilityScope,
+	TemporalConstraint,
+} from './types.js';
 
 const MODE_SCOPES: Readonly<Record<HybridVisibilityScope['mode'], ReadonlySet<HybridRetrievalScope>>> = {
 	default: new Set(['default']),
@@ -18,7 +23,10 @@ function normalizePath(value: string): string | null {
 	for (const segment of value.replaceAll('\\', '/').split('/')) {
 		if (segment.length === 0 || segment === '.') continue;
 		if (segment === '..') return null;
-		segments.push(segment.normalize('NFKC').toLocaleLowerCase('en-US'));
+		// Path ACLs must follow the same case-sensitive, NFC-preserving identity
+		// used by normalizeDocumentPath. Folding case or compatibility characters
+		// can grant access to a distinct path on a case-sensitive filesystem.
+		segments.push(segment.normalize('NFC'));
 	}
 	return segments.join('/');
 }
@@ -60,6 +68,26 @@ export function isPathAllowedByPrefixes(
 }
 
 export type VisibilityPredicate = (record: HybridRecord) => boolean;
+
+/** Explicit after/before bounds are authorization-like hard filters. */
+export function isRecordWithinTemporalBounds(
+	record: HybridRecord,
+	constraint: TemporalConstraint | undefined,
+): boolean {
+	if (constraint === undefined) return true;
+	const { after, before } = constraint;
+	if (after === undefined && before === undefined) return true;
+	if (
+		(after !== undefined && !Number.isFinite(after))
+		|| (before !== undefined && !Number.isFinite(before))
+		|| (after !== undefined && before !== undefined && after > before)
+		|| !Number.isFinite(record.modifiedAt)
+	) return false;
+	const modifiedAt = record.modifiedAt as number;
+	if (after !== undefined && modifiedAt < after) return false;
+	if (before !== undefined && modifiedAt > before) return false;
+	return true;
+}
 
 export function createVisibilityPredicate(scope: HybridVisibilityScope): VisibilityPredicate {
 	const allowedSources = scope.allowedSourceIds === undefined ? null : new Set(scope.allowedSourceIds);

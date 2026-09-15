@@ -5,6 +5,7 @@ import {
 import { HybridQueryEngine, type HybridEngineCreateOptions } from '../hybrid/engine.js';
 import type {
 	EvidencePack,
+	Bm25Artifact,
 	HybridQuery,
 	HybridQueryOptions,
 	HybridRecord,
@@ -28,6 +29,7 @@ import type {
 	SecondBrainSourceDescriptor,
 	SecondBrainSourceStatus,
 	SecondBrainStatus,
+	WritableDirectoryBinding,
 } from './types.js';
 
 const HARD_QUERY_DEADLINE_MS = 5_000;
@@ -39,8 +41,8 @@ const RETRIEVAL_MODES = new Set<HybridRetrievalMode>(['default', 'project', 'ref
 
 /**
  * Atomic in-memory query view over immutable READY/CURRENT generations.
- * `query()` only touches this view; sourceRoot is exclusively reachable from
- * the controlled reingest path after a committed, human-approved write.
+ * `query()` only touches this view; sourceRoot is reachable only from the
+ * controlled write flow for inspect/commit/rollback and subsequent reingest.
  */
 export class SecondBrainRuntime implements SecondBrainRuntimeApi {
 	readonly #sources: readonly SecondBrainSourceDescriptor[];
@@ -52,6 +54,7 @@ export class SecondBrainRuntime implements SecondBrainRuntimeApi {
 	#revision = 0;
 	#precomputed = false;
 	#reloadTail: Promise<void> = Promise.resolve();
+	#reingestTails = new Map<string, Promise<void>>();
 	#writes: SecondBrainControlledWrites | null = null;
 
 	private constructor(options: SecondBrainRuntimeOptions) {
@@ -244,9 +247,11 @@ export class SecondBrainRuntime implements SecondBrainRuntimeApi {
 			this.#options.embeddingAdapter,
 			this.#requirePrecomputedVectors,
 		);
+		const bm25Artifact = combineBm25Artifacts(ordered);
 		const engineOptions: HybridEngineCreateOptions = {
 			embeddingAdapter: this.#options.embeddingAdapter,
 			...(vectorArtifact === undefined ? {} : { vectorArtifact }),
+			...(bm25Artifact === undefined ? {} : { bm25Artifact }),
 			...(this.#options.reranker === undefined ? {} : { reranker: this.#options.reranker }),
 			...(this.#options.channelWeights === undefined
 				? {}
@@ -317,15 +322,54 @@ export class SecondBrainRuntime implements SecondBrainRuntimeApi {
 
 	async #requestReingest(sourceRef: SourceRef): Promise<void> {
 		const source = this.#sourcesById.get(sourceRef.sourceId);
+		const binding = source?.writable;
 		if (
-			!source?.writable
-			|| source.writable.adapter.adapterId !== sourceRef.adapterId
+			!source
+			|| !binding
+			|| binding.adapter.adapterId !== sourceRef.adapterId
 		) throw new Error('Reingest source is not writable.');
-		const build = await source.writable.compiler.build();
+		const previous = this.#reingestTails.get(source.sourceId) ?? Promise.resolve();
+		const execute = (): Promise<void> => this.#requestReingestNow(source, binding, sourceRef);
+		const task = previous.then(execute, execute);
+		const settled = task.then(() => undefined, () => undefined);
+		this.#reingestTails.set(source.sourceId, settled);
+		try {
+			await task;
+		} finally {
+			if (this.#reingestTails.get(source.sourceId) === settled) {
+				this.#reingestTails.delete(source.sourceId);
+			}
+		}
+	}
+
+	async #requestReingestNow(
+		source: SecondBrainSourceDescriptor,
+		binding: WritableDirectoryBinding,
+		sourceRef: SourceRef,
+	): Promise<void> {
+		const published = this.#loadedById.get(source.sourceId)?.generation;
+		if (!published) throw new Error('Writable runtime source has no published generation.');
+		const expectedGenerationId = published.generationId;
+		const expectedManifestSha256 = published.manifestSha256;
+		const build = await binding.compiler.build();
+		const exactCandidate: SecondBrainSourceDescriptor = {
+			...source,
+			pinnedGenerationId: build.generation.generationId,
+			pinnedManifestSha256: build.generation.manifestSha256,
+		};
+		// Do not make a generation durable in the runtime catalog until the exact
+		// immutable payload has passed the same cross-layer checks as startup.
+		await loadCompiledSource(
+			exactCandidate,
+			this.#options.embeddingAdapter,
+			this.#requirePrecomputedVectors,
+		);
 		await this.#options.onGenerationPublished?.(
 			source.sourceId,
 			build.generation.generationId,
 			build.generation.manifestSha256,
+			expectedGenerationId,
+			expectedManifestSha256,
 		);
 		source.pinnedGenerationId = build.generation.generationId;
 		source.pinnedManifestSha256 = build.generation.manifestSha256;
@@ -433,6 +477,17 @@ function combineVectorArtifacts(
 	};
 }
 
+function combineBm25Artifacts(
+	loaded: readonly LoadedCompiledSource[],
+): Bm25Artifact | undefined {
+	const withRecords = loaded.filter((source) => source.records.length > 0);
+	if (withRecords.length === 0) return undefined;
+	return {
+		schemaVersion: 1,
+		entries: withRecords.flatMap((source) => [...source.bm25Artifact.entries]),
+	};
+}
+
 function assertUniqueRecordIds(records: readonly HybridRecord[]): void {
 	const seen = new Set<string>();
 	for (const record of records) {
@@ -485,6 +540,15 @@ function validateQueryRequest(request: SecondBrainQueryRequest): void {
 	for (const sourceId of request.sourceIds ?? []) validateLogicalIdentifier(sourceId, 'query sourceId');
 	for (const projectId of request.projectIds ?? []) validateLogicalIdentifier(projectId, 'query projectId');
 	for (const recordId of request.seedRecordIds ?? []) validateLogicalIdentifier(recordId, 'query seedRecordId');
+	if (request.temporal !== undefined) {
+		const { after, before, preferRecent } = request.temporal;
+		if (
+			(after !== undefined && !Number.isFinite(after))
+			|| (before !== undefined && !Number.isFinite(before))
+			|| (preferRecent !== undefined && typeof preferRecent !== 'boolean')
+			|| (after !== undefined && before !== undefined && after > before)
+		) throw new TypeError('Query temporal constraint is invalid.');
+	}
 }
 
 function validateLogicalIdentifier(value: string, label: string): void {

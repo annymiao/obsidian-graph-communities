@@ -1,10 +1,17 @@
 #!/usr/bin/env node
 
 import { fileURLToPath } from 'node:url';
+import { SourceChangedDuringCompilationError } from './compiler/offlineKnowledgeCompiler.js';
+import { GenerationStoreBusyError } from './generationStore.js';
+import { BuildStateBusyError } from './persistence/buildStateStore.js';
+import { PrivateDirectoryLockBusyError } from './persistence/privateDirectoryLock.js';
 import {
 	loadSecondBrainBuildConfiguration,
 	publishSecondBrainRuntimeCatalog,
+	readSecondBrainRuntimeCatalogChecksumForConfiguration,
+	RuntimeCatalogConflictError,
 	validateSecondBrainBuildArtifacts,
+	type SecondBrainGenerationPin,
 } from './secondBrainBootstrap.js';
 
 export const SECOND_BRAIN_COMPILE_VERSION = '1.3.0';
@@ -76,7 +83,11 @@ export async function compileConfiguredSources(
 	options: Pick<OfflineCompileOptions, 'forceCompaction'> = { forceCompaction: false },
 ): Promise<OfflineCompileSummary> {
 	const configuration = await loadSecondBrainBuildConfiguration(environment);
+	const expectedCatalogSha256 = await readSecondBrainRuntimeCatalogChecksumForConfiguration(
+		configuration,
+	);
 	const sources: OfflineSourceCompileSummary[] = [];
+	const pins: SecondBrainGenerationPin[] = [];
 	// Deliberately sequential: an explicitly selected local embedding model may
 	// have tight memory bounds, while first-build latency has no online SLO.
 	for (const source of configuration.sources) {
@@ -87,6 +98,11 @@ export async function compileConfiguredSources(
 			(total, document) => total + document.chunks.length,
 			0,
 		);
+		pins.push({
+			sourceId: source.descriptor.sourceId,
+			generationId: result.generation.generationId,
+			manifestSha256: result.generation.manifestSha256,
+		});
 		sources.push({
 			sourceId: source.descriptor.sourceId,
 			label: source.descriptor.label,
@@ -107,8 +123,8 @@ export async function compileConfiguredSources(
 	}
 	// The online processes learn about a new complete set only after every
 	// source generation above has published successfully.
-	await validateSecondBrainBuildArtifacts(configuration);
-	await publishSecondBrainRuntimeCatalog(configuration);
+	await validateSecondBrainBuildArtifacts(configuration, pins);
+	await publishSecondBrainRuntimeCatalog(configuration, pins, expectedCatalogSha256);
 	return {
 		status: 'ready',
 		serviceVersion: SECOND_BRAIN_COMPILE_VERSION,
@@ -145,10 +161,23 @@ export async function runOfflineCompileCli(
 	try {
 		let first = true;
 		do {
-			const summary = await compileConfiguredSources(environment, {
-				forceCompaction: first && options.forceCompaction,
-			});
-			writeOutput(JSON.stringify(summary));
+			try {
+				const summary = await compileConfiguredSources(environment, {
+					forceCompaction: first && options.forceCompaction,
+				});
+				writeOutput(JSON.stringify(summary));
+			} catch (error) {
+				const conflictCode = retryableOfflineCompileConflictCode(error);
+				if (!options.watch || conflictCode === null) throw error;
+				writeOutput(JSON.stringify({
+					status: 'retrying',
+					serviceVersion: SECOND_BRAIN_COMPILE_VERSION,
+					reason: error instanceof SourceChangedDuringCompilationError
+						? 'source_changed_during_compilation'
+						: 'transient_compile_conflict',
+					conflictCode,
+				}));
+			}
 			first = false;
 			if (!options.watch || stopped) break;
 			await new Promise<void>((resolve) => {
@@ -168,6 +197,19 @@ export async function runOfflineCompileCli(
 			process.removeListener('SIGTERM', stop);
 		}
 	}
+}
+
+function retryableOfflineCompileConflictCode(error: unknown): string | null {
+	if (error instanceof SourceChangedDuringCompilationError) return error.code;
+	if (error instanceof RuntimeCatalogConflictError && error.retryable) return error.code;
+	if (error instanceof BuildStateBusyError && error.retryable) return error.code;
+	if (error instanceof GenerationStoreBusyError && error.retryable) return error.code;
+	if (error instanceof PrivateDirectoryLockBusyError) {
+		return error.reason === 'owner-busy'
+			? 'RUNTIME_CATALOG_LOCK_BUSY'
+			: 'RUNTIME_CATALOG_TRANSITION_GATE_BUSY';
+	}
+	return null;
 }
 
 function strictInteger(value: string, minimum: number, maximum: number, label: string): number {

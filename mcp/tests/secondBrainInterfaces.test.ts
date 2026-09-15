@@ -11,6 +11,7 @@ import {
 	rename,
 	rm,
 	stat,
+	symlink,
 	unlink,
 	writeFile,
 } from 'node:fs/promises';
@@ -29,7 +30,10 @@ import {
 	compileConfiguredSources,
 	parseOfflineCompileArguments,
 } from '../src/offlineCompile.js';
-import { createSecondBrainMcpServer } from '../src/secondBrainMcp.js';
+import {
+	SECOND_BRAIN_MCP_MAX_PROPOSAL_BYTES,
+	createSecondBrainMcpServer,
+} from '../src/secondBrainMcp.js';
 import type { SecondBrainRuntimeApi } from '../src/secondBrain/types.js';
 import {
 	createSecondBrainHttpServer,
@@ -37,8 +41,10 @@ import {
 } from '../src/secondBrainHttp.js';
 import {
 	collectTransmissionReview,
+	MAX_TRANSMISSION_REVIEW_BYTES,
 	submitTransmissionReview,
 } from '../src/transmissionReview.js';
+import { canonicalJson, sha256 } from '../src/write/integrity.js';
 
 const API_KEY = 'synthetic-local-api-key-32-bytes-minimum';
 const CARD = '---\ntype: knowledge-card\nstatus: active\n---\n';
@@ -151,6 +157,7 @@ test('production catalog starts disconnected, and MCP/HTTP enforce reusable safe
 		await rename(projectRoot, hiddenProject);
 		projectHidden = true;
 		const bootstrap = await createSecondBrainBootstrap(onlineEnvironment);
+		assert.equal(bootstrap.controlledWritesEnabled, true);
 		const ordinarySourceId = compileSummary.sources
 			.find((source) => source.label === 'Synthetic ordinary')?.sourceId;
 		const projectSourceId = compileSummary.sources
@@ -210,6 +217,7 @@ test('production catalog starts disconnected, and MCP/HTTP enforce reusable safe
 			const names = tools.tools.map((tool) => tool.name);
 			for (const required of [
 				'get_second_brain_status',
+				'get_second_brain_capabilities',
 				'query_second_brain',
 				'prepare_second_brain_write',
 				'commit_reviewed_second_brain_write',
@@ -218,6 +226,27 @@ test('production catalog starts disconnected, and MCP/HTTP enforce reusable safe
 				'get_review_draft_for_ui',
 				'submit_review_decision_for_ui',
 			]) assert.ok(names.includes(required));
+			const capabilityTool = tools.tools.find(
+				(tool) => tool.name === 'get_second_brain_capabilities',
+			);
+			assert.equal(capabilityTool?.annotations?.readOnlyHint, true);
+			const capabilities = JSON.parse(firstText(await client.callTool({
+				name: 'get_second_brain_capabilities',
+				arguments: {},
+			}))) as unknown;
+			assert.ok(isRecord(capabilities));
+			assert.equal(capabilities.providerNeutral, true);
+			assert.equal(capabilities.providerIdentityAffectsAuthorization, false);
+			assert.ok(isRecord(capabilities.interfaces));
+			assert.equal(capabilities.interfaces.mcp.controlledWrite, true);
+			assert.equal(capabilities.interfaces.http.controlledWrite, false);
+			assert.ok(isRecord(capabilities.controlledWrite));
+			assert.equal(capabilities.controlledWrite.enabled, true);
+			assert.equal(capabilities.controlledWrite.authorizationGranularity, 'source-level');
+			assert.equal(capabilities.controlledWrite.pathAuthorization, 'per-request');
+			assert.equal(capabilities.controlledWrite.state, 'enabled');
+			assert.deepEqual(capabilities.controlledWrite.writableSourceIds, [ordinarySourceId]);
+			assert.ok(capabilities.controlledWrite.protocol.supported.includes('write.atomic'));
 			const sourceId = ordinarySourceId;
 
 			const firstPrepared = await client.callTool({
@@ -252,8 +281,11 @@ test('production catalog starts disconnected, and MCP/HTTP enforce reusable safe
 					ui_token: firstCredentials.uiToken,
 				},
 			});
+			const firstDraftMetadata = privateDraft(firstDraftResult);
+			assert.equal(firstDraftMetadata.review_kind, 'controlled-write');
+			assert.equal(firstDraftMetadata.editable, false);
 			const firstDraft = privateDraftContent(firstDraftResult);
-			await client.callTool({
+			const editedDecision = await client.callTool({
 				name: 'submit_review_decision_for_ui',
 				arguments: {
 					review_id: firstCredentials.reviewId,
@@ -262,6 +294,8 @@ test('production catalog starts disconnected, and MCP/HTTP enforce reusable safe
 					content: firstDraft.replace('nebula corrected', 'tampered correction'),
 				},
 			});
+			assert.equal(editedDecision.isError, true);
+			assert.match(JSON.stringify(editedDecision.content), /edited/u);
 			const editedCommit = await client.callTool({
 				name: 'commit_reviewed_second_brain_write',
 				arguments: {
@@ -270,7 +304,7 @@ test('production catalog starts disconnected, and MCP/HTTP enforce reusable safe
 				},
 			});
 			assert.equal(editedCommit.isError, true);
-			assert.match(JSON.stringify(editedCommit.content), /edited/u);
+			assert.match(JSON.stringify(editedCommit.content), /not bound/u);
 			assert.equal(await readFile(path.join(ordinaryRoot, '30-Shared-Knowledge', 'durable.md'), 'utf8'), baseline);
 
 			const prepared = await client.callTool({
@@ -321,6 +355,9 @@ test('production catalog starts disconnected, and MCP/HTTP enforce reusable safe
 					ui_token: rollbackCredentials.uiToken,
 				},
 			});
+			const rollbackDraftMetadata = privateDraft(rollbackDraftResult);
+			assert.equal(rollbackDraftMetadata.review_kind, 'controlled-write');
+			assert.equal(rollbackDraftMetadata.editable, false);
 			await client.callTool({
 				name: 'submit_review_decision_for_ui',
 				arguments: {
@@ -446,6 +483,104 @@ test('offline configuration rejects artifacts or controlled-write state inside a
 			OBSIDIAN_ARTIFACT_PATH: safeArtifacts,
 			OBSIDIAN_SECOND_BRAIN_WRITE_STATE_PATH: path.join(repositoryRoot, 'write-state'),
 		}), /Controlled write state must be outside every Git worktree/u);
+		if (process.platform !== 'win32') {
+			const repositoryAlias = path.join(root, 'repository-alias');
+			const sourceAlias = path.join(root, 'source-alias');
+			await symlink(repositoryRoot, repositoryAlias, 'dir');
+			await symlink(sourceRoot, sourceAlias, 'dir');
+			await assert.rejects(loadSecondBrainBuildConfiguration({
+				...baseEnvironment,
+				OBSIDIAN_ARTIFACT_PATH: safeArtifacts,
+				OBSIDIAN_SECOND_BRAIN_CATALOG_PATH: path.join(repositoryAlias, 'private', 'custom.json'),
+			}), /Runtime catalog must be outside every Git worktree/u);
+			await assert.rejects(loadSecondBrainBuildConfiguration({
+				...baseEnvironment,
+				OBSIDIAN_ARTIFACT_PATH: safeArtifacts,
+				OBSIDIAN_SECOND_BRAIN_WRITE_STATE_PATH: path.join(repositoryAlias, 'write-state'),
+			}), /Controlled write state must be outside every Git worktree/u);
+			await assert.rejects(loadSecondBrainBuildConfiguration({
+				...baseEnvironment,
+				OBSIDIAN_ARTIFACT_PATH: safeArtifacts,
+				OBSIDIAN_SECOND_BRAIN_WRITE_STATE_PATH: path.join(sourceAlias, 'hidden-write-state'),
+			}), /Write state must be outside every configured source/u);
+		}
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test('online bootstrap revalidates catalog storage boundaries before opening generations', async () => {
+	const root = await mkdtemp(path.join(tmpdir(), 'second-brain-online-boundary-synthetic-'));
+	try {
+		const sourceRoot = path.join(root, 'source');
+		const artifactRoot = path.join(root, 'artifacts');
+		const repositoryRoot = path.join(root, 'synthetic-repository');
+		await mkdir(sourceRoot, { recursive: true });
+		await mkdir(path.join(repositoryRoot, '.git'), { recursive: true });
+		await writeFile(path.join(sourceRoot, 'note.md'), '# Synthetic boundary note\n', 'utf8');
+		const environment: NodeJS.ProcessEnv = {
+			OBSIDIAN_SOURCES_JSON: JSON.stringify([{
+				id: 'synthetic:online-boundary',
+				name: 'Synthetic online boundary',
+				path: sourceRoot,
+				kind: 'directory',
+				writable: true,
+			}]),
+			OBSIDIAN_ARTIFACT_PATH: artifactRoot,
+			OBSIDIAN_PERSIST_INDEX: 'true',
+			OBSIDIAN_EMBEDDING_DIMENSION: '32',
+		};
+		await compileConfiguredSources(environment);
+		const catalogPath = path.join(artifactRoot, 'second-brain-v1', 'runtime-catalog.json');
+		const envelope = JSON.parse(await readFile(catalogPath, 'utf8')) as {
+			catalog: {
+				sources: Array<{ generationRoot: string }>;
+			};
+			sha256: string;
+		};
+		envelope.catalog.sources[0]!.generationRoot = path.join(repositoryRoot, 'generations');
+		envelope.sha256 = sha256(canonicalJson(envelope.catalog));
+		await writeFile(catalogPath, `${canonicalJson(envelope)}\n`, { encoding: 'utf8', mode: 0o600 });
+		await assert.rejects(
+			createSecondBrainBootstrap({
+				OBSIDIAN_ARTIFACT_PATH: artifactRoot,
+				OBSIDIAN_EMBEDDING_DIMENSION: '32',
+			}),
+			/Compiled generation state must be outside every Git worktree/u,
+		);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test('trusted MCP App opt-in stays disabled when the runtime catalog has no writable source', async () => {
+	const root = await mkdtemp(path.join(tmpdir(), 'second-brain-read-only-capability-synthetic-'));
+	try {
+		const sourceRoot = path.join(root, 'read-only-source');
+		const artifactRoot = path.join(root, 'artifacts');
+		await mkdir(sourceRoot, { recursive: true });
+		await writeFile(path.join(sourceRoot, 'note.md'), '# Synthetic read-only note\n', 'utf8');
+		await compileConfiguredSources({
+			OBSIDIAN_SOURCES_JSON: JSON.stringify([{
+				id: 'synthetic:read-only',
+				name: 'Synthetic read-only',
+				path: sourceRoot,
+				kind: 'directory',
+			}]),
+			OBSIDIAN_ARTIFACT_PATH: artifactRoot,
+			OBSIDIAN_PERSIST_INDEX: 'true',
+			OBSIDIAN_EMBEDDING_DIMENSION: '32',
+		});
+		const bootstrap = await createSecondBrainBootstrap({
+			OBSIDIAN_ARTIFACT_PATH: artifactRoot,
+			OBSIDIAN_EMBEDDING_DIMENSION: '32',
+			OBSIDIAN_SECOND_BRAIN_WRITE_APPROVAL: 'trusted-mcp-app',
+		});
+		assert.equal(bootstrap.controlledWritesEnabled, false);
+		assert.deepEqual(
+			bootstrap.runtime.status(bootstrap.principal).sources.map((source) => source.writable),
+			[false],
+		);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
@@ -531,29 +666,206 @@ test('strict provider, ACL and watch configuration fail closed', async () => {
 	}
 });
 
-test('MCP write and private UI tools require the trusted-host opt-in', async () => {
+test('MCP writes require both trusted-host opt-in and a principal-visible writable source', async () => {
+	const runtime = {
+		status: () => ({ sources: [] }),
+	} as unknown as SecondBrainRuntimeApi;
+	for (const scenario of [
+		{ trustedWriteOptIn: false, expectedState: 'trusted_host_opt_in_required' },
+		{ trustedWriteOptIn: true, expectedState: 'no_writable_source' },
+	] as const) {
+		const server = createSecondBrainMcpServer(
+			runtime,
+			{
+				principalId: 'synthetic-read-only-client',
+				allowedSourceIds: [],
+				allowedModes: ['default'],
+			},
+			{
+				transport: 'stdio',
+				transmissionReviewMode: 'disabled',
+				approvalBroker: new OneTimeHumanApprovalBroker(),
+				...(scenario.trustedWriteOptIn ? { controlledWritesEnabled: true } : {}),
+			},
+		);
+		const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+		const client = new Client({ name: 'synthetic-read-only-test', version: '1.3.0' });
+		await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+		try {
+			const tools = await client.listTools();
+			const names = tools.tools.map((tool) => tool.name);
+			assert.equal(names.some((name) => name.includes('write') || name.includes('rollback')), false);
+			assert.equal(names.includes('get_review_draft_for_ui'), false);
+			assert.equal(names.includes('submit_review_decision_for_ui'), false);
+			assert.equal(names.includes('get_second_brain_capabilities'), true);
+			const capabilityTool = tools.tools.find(
+				(tool) => tool.name === 'get_second_brain_capabilities',
+			);
+			assert.equal(capabilityTool?.annotations?.readOnlyHint, true);
+			const capabilities = JSON.parse(firstText(await client.callTool({
+				name: 'get_second_brain_capabilities',
+				arguments: {},
+			}))) as unknown;
+			assert.ok(isRecord(capabilities) && isRecord(capabilities.controlledWrite));
+			assert.equal(capabilities.controlledWrite.enabled, false);
+			assert.equal(capabilities.controlledWrite.state, scenario.expectedState);
+			assert.deepEqual(capabilities.controlledWrite.writableSourceIds, []);
+			assert.deepEqual(capabilities.controlledWrite.protocol.supported, []);
+		} finally {
+			await client.close();
+			await server.close();
+		}
+	}
+});
+
+test('MCP proposal limits are byte-accurate and failed or cancelled reviews release pending state', async () => {
+	const broker = new OneTimeHumanApprovalBroker();
+	let prepareCalls = 0;
+	let cleanupCalls = 0;
+	let oversizedReview = true;
+	let currentReview = syntheticReview('a', Date.now() + 60_000);
+	const runtime = {
+		status: () => ({ sources: [{ sourceId: 'synthetic', writable: true }] }),
+		prepareWrite: async () => {
+			prepareCalls += 1;
+			currentReview = syntheticReview(
+				String.fromCharCode(96 + prepareCalls),
+				Date.now() + 60_000,
+			);
+			if (oversizedReview) {
+				currentReview.reviewText = 'x'.repeat(MAX_TRANSMISSION_REVIEW_BYTES + 1);
+			}
+			return currentReview;
+		},
+		approveAndCommitWrite: async () => {
+			cleanupCalls += 1;
+			await broker.requestApproval(currentReview);
+			throw new Error('synthetic denial cleanup');
+		},
+	} as unknown as SecondBrainRuntimeApi;
 	const server = createSecondBrainMcpServer(
-		{} as SecondBrainRuntimeApi,
+		runtime,
 		{
-			principalId: 'synthetic-read-only-client',
-			allowedSourceIds: [],
+			principalId: 'synthetic-proposal-limits',
+			allowedSourceIds: ['synthetic'],
 			allowedModes: ['default'],
 		},
 		{
 			transport: 'stdio',
 			transmissionReviewMode: 'disabled',
-			approvalBroker: new OneTimeHumanApprovalBroker(),
+			approvalBroker: broker,
+			controlledWritesEnabled: true,
+			pendingReviewCapacity: 1,
 		},
 	);
 	const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-	const client = new Client({ name: 'synthetic-read-only-test', version: '1.3.0' });
+	const client = new Client({ name: 'synthetic-proposal-limit-test', version: '1.3.0' });
 	await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+	let activeCredentials: { reviewId: string; uiToken: string } | null = null;
 	try {
-		const names = (await client.listTools()).tools.map((tool) => tool.name);
-		assert.equal(names.some((name) => name.includes('write') || name.includes('rollback')), false);
-		assert.equal(names.includes('get_review_draft_for_ui'), false);
-		assert.equal(names.includes('submit_review_decision_for_ui'), false);
+		const capabilities = JSON.parse(firstText(await client.callTool({
+			name: 'get_second_brain_capabilities',
+			arguments: {},
+		}))) as any;
+		assert.equal(
+			capabilities.controlledWrite.protocol.maxProposalBytes,
+			SECOND_BRAIN_MCP_MAX_PROPOSAL_BYTES,
+		);
+		assert.equal(
+			capabilities.controlledWrite.maximumPrivateReviewBytes,
+			MAX_TRANSMISSION_REVIEW_BYTES,
+		);
+
+		const commonArguments = {
+			source_id: 'synthetic',
+			path: 'note.md',
+			operation: 'replace',
+			rationale: 'synthetic',
+		};
+		const tooManyAsciiBytes = await client.callTool({
+			name: 'prepare_second_brain_write',
+			arguments: {
+				...commonArguments,
+				after_content: 'a'.repeat(SECOND_BRAIN_MCP_MAX_PROPOSAL_BYTES + 1),
+			},
+		});
+		assert.equal(tooManyAsciiBytes.isError, true);
+		assert.equal(prepareCalls, 0);
+		const tooManyUtf8Bytes = await client.callTool({
+			name: 'prepare_second_brain_write',
+			arguments: {
+				...commonArguments,
+				after_content: '界'.repeat(Math.floor(SECOND_BRAIN_MCP_MAX_PROPOSAL_BYTES / 3) + 1),
+			},
+		});
+		assert.equal(tooManyUtf8Bytes.isError, true);
+		assert.match(firstText(tooManyUtf8Bytes), /byte MCP review limit/u);
+		assert.equal(prepareCalls, 0, 'UTF-8 byte rejection must happen before runtime prepare');
+
+		const reviewTooLarge = await client.callTool({
+			name: 'prepare_second_brain_write',
+			arguments: { ...commonArguments, after_content: 'small' },
+		});
+		assert.equal(reviewTooLarge.isError, true);
+		assert.equal(prepareCalls, 1);
+		assert.equal(cleanupCalls, 1, 'failed review rendering must consume runtime pending state');
+
+		oversizedReview = false;
+		const prepared = await client.callTool({
+			name: 'prepare_second_brain_write',
+			arguments: { ...commonArguments, after_content: 'small' },
+		});
+		assert.equal(prepared.isError, undefined, 'the failed review must not retain capacity');
+		activeCredentials = reviewCredentials(prepared);
+		const editedApproval = await client.callTool({
+			name: 'submit_review_decision_for_ui',
+			arguments: {
+				review_id: activeCredentials.reviewId,
+				ui_token: activeCredentials.uiToken,
+				action: 'approve',
+				content: 'edited controlled-operation review',
+			},
+		});
+		assert.equal(editedApproval.isError, true);
+		assert.match(firstText(editedApproval), /review was edited/u);
+		activeCredentials = null;
+		assert.equal(cleanupCalls, 2, 'an edited operation review must be denied and released immediately');
+
+		const preparedForCancel = await client.callTool({
+			name: 'prepare_second_brain_write',
+			arguments: { ...commonArguments, after_content: 'small for cancellation' },
+		});
+		assert.equal(preparedForCancel.isError, undefined);
+		activeCredentials = reviewCredentials(preparedForCancel);
+		const cancelled = await client.callTool({
+			name: 'submit_review_decision_for_ui',
+			arguments: {
+				review_id: activeCredentials.reviewId,
+				ui_token: activeCredentials.uiToken,
+				action: 'cancel',
+			},
+		});
+		assert.equal(cancelled.isError, undefined);
+		activeCredentials = null;
+		assert.equal(cleanupCalls, 3, 'UI cancel must consume pending without a model commit call');
+
+		const afterCancel = await client.callTool({
+			name: 'prepare_second_brain_write',
+			arguments: { ...commonArguments, after_content: 'small again' },
+		});
+		assert.equal(afterCancel.isError, undefined, 'UI cancel must immediately release review capacity');
+		activeCredentials = reviewCredentials(afterCancel);
 	} finally {
+		if (activeCredentials !== null) {
+			await client.callTool({
+				name: 'submit_review_decision_for_ui',
+				arguments: {
+					review_id: activeCredentials.reviewId,
+					ui_token: activeCredentials.uiToken,
+					action: 'cancel',
+				},
+			}).catch(() => undefined);
+		}
 		await client.close();
 		await server.close();
 	}
@@ -663,6 +975,7 @@ test('MCP pending write/query bindings have explicit capacity and local expiry',
 	let commitCalls = 0;
 	const writeReview = syntheticReview('p', now + 60_000);
 	const runtime = {
+		status: () => ({ sources: [{ sourceId: 'synthetic', writable: true }] }),
 		query: async (_principal: unknown, request: { text: string }) => ({
 			status: 'no_evidence',
 			query: request.text,
@@ -716,6 +1029,15 @@ test('MCP pending write/query bindings have explicit capacity and local expiry',
 		});
 		writeCredentials = reviewCredentials(prepared);
 		const preparedId = requiredStructuredString(prepared, 'prepared_id');
+		const writeDraft = privateDraft(await client.callTool({
+			name: 'get_review_draft_for_ui',
+			arguments: {
+				review_id: writeCredentials.reviewId,
+				ui_token: writeCredentials.uiToken,
+			},
+		}));
+		assert.equal(writeDraft.review_kind, 'controlled-write');
+		assert.equal(writeDraft.editable, false);
 		const atCapacity = await client.callTool({
 			name: 'query_second_brain',
 			arguments: { query: 'synthetic', mode: 'default' },
@@ -737,6 +1059,15 @@ test('MCP pending write/query bindings have explicit capacity and local expiry',
 		});
 		assert.equal(afterCleanup.isError, undefined);
 		queryCredentials = reviewCredentials(afterCleanup);
+		const queryDraft = privateDraft(await client.callTool({
+			name: 'get_review_draft_for_ui',
+			arguments: {
+				review_id: queryCredentials.reviewId,
+				ui_token: queryCredentials.uiToken,
+			},
+		}));
+		assert.equal(queryDraft.review_kind, 'query');
+		assert.equal(queryDraft.editable, true);
 	} finally {
 		for (const credentials of [writeCredentials, queryCredentials]) {
 			if (credentials === null) continue;
@@ -787,9 +1118,13 @@ function requiredStructuredString(result: unknown, key: string): string {
 	return value as string;
 }
 
-function privateDraftContent(result: unknown): string {
+function privateDraft(result: unknown): Record<string, any> {
 	assert.ok(isRecord(result) && isRecord(result._meta) && isRecord(result._meta.obsidianReviewDraft));
-	const content = result._meta.obsidianReviewDraft.content;
+	return result._meta.obsidianReviewDraft;
+}
+
+function privateDraftContent(result: unknown): string {
+	const content = privateDraft(result).content;
 	assert.equal(typeof content, 'string');
 	return content as string;
 }

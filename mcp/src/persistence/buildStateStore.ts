@@ -7,7 +7,6 @@ import {
 	readdir,
 	realpath,
 	rename,
-	rm,
 	unlink,
 } from 'node:fs/promises';
 import path from 'node:path';
@@ -22,6 +21,10 @@ import {
 	type PrivateDirectoryIdentity,
 } from '../privateFs.js';
 import { canonicalJson, hashCanonicalJson } from './canonicalJson.js';
+import {
+	PrivateDirectoryLockBusyError,
+	withPrivateDirectoryLock,
+} from './privateDirectoryLock.js';
 
 const BUILD_STATE_SCHEMA_VERSION = 1 as const;
 const CHECKPOINT_FILE = 'checkpoint.json';
@@ -96,17 +99,20 @@ interface CheckpointWriteState {
 	lastEntrySignature: string | null;
 }
 
-interface LockOwner {
-	schemaVersion: typeof BUILD_STATE_SCHEMA_VERSION;
-	pid: number;
-	token: string;
-	createdAt: string;
-}
-
 export class BuildStateBusyError extends Error {
-	constructor(message = 'Another offline compiler owns the build-state lock.') {
+	readonly code: 'BUILD_STATE_LOCK_BUSY' | 'BUILD_STATE_TRANSITION_GATE_BUSY';
+	readonly retryable: boolean;
+
+	constructor(
+		message = 'Another offline compiler owns the build-state lock.',
+		transitionGateBusy = false,
+	) {
 		super(message);
 		this.name = 'BuildStateBusyError';
+		this.code = transitionGateBusy
+			? 'BUILD_STATE_TRANSITION_GATE_BUSY'
+			: 'BUILD_STATE_LOCK_BUSY';
+		this.retryable = true;
 	}
 }
 
@@ -131,12 +137,22 @@ export class BuildStateStore {
 	async withBuildLock<T>(operation: () => Promise<T>): Promise<T> {
 		await this.ensureInitialized();
 		const lockPath = this.resolveRootChild(LOCK_DIRECTORY);
-		const token = randomBytes(16).toString('hex');
-		await this.acquireLock(lockPath, token);
 		try {
-			return await operation();
-		} finally {
-			await this.releaseLock(lockPath, token);
+			return await withPrivateDirectoryLock(lockPath, async () => {
+				// Another process may have appended/compacted the journal or replaced
+				// checkpoint state since this instance last held the lock.
+				this.journalCache = null;
+				this.checkpointWriteState = undefined;
+				return operation();
+			});
+		} catch (error) {
+			if (error instanceof PrivateDirectoryLockBusyError) {
+				throw new BuildStateBusyError(
+					error.message,
+					error.reason === 'transition-gate-busy',
+				);
+			}
+			throw error;
 		}
 	}
 
@@ -550,94 +566,6 @@ export class BuildStateStore {
 		await syncDirectory(this.canonicalRootPath);
 	}
 
-	private async acquireLock(lockPath: string, token: string): Promise<void> {
-		try {
-			await mkdir(lockPath, { mode: 0o700 });
-		} catch (error) {
-			if (!isNodeError(error, 'EEXIST')) throw error;
-			if (!await this.recoverStaleLock(lockPath)) throw new BuildStateBusyError();
-			await mkdir(lockPath, { mode: 0o700 });
-		}
-		const lockInfo = await lstat(lockPath);
-		assertPrivateDirectoryStats(lockInfo, 'Build-state lock directory');
-		const owner: LockOwner = {
-			schemaVersion: BUILD_STATE_SCHEMA_VERSION,
-			pid: process.pid,
-			token,
-			createdAt: new Date().toISOString(),
-		};
-		try {
-			const handle = await open(
-				path.join(lockPath, 'owner.json'),
-				constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NO_FOLLOW,
-				0o600,
-			);
-			try {
-				await assertPrivateFileHandle(handle, {
-					label: 'Build-state lock owner',
-					maximumBytes: 4_096,
-				});
-				await handle.writeFile(`${canonicalJson(owner)}\n`, 'utf8');
-				await handle.sync();
-				await assertPrivateFileHandle(handle, {
-					label: 'Build-state lock owner',
-					maximumBytes: 4_096,
-				});
-			} finally {
-				await handle.close();
-			}
-			await syncDirectory(lockPath);
-			await syncDirectory(this.canonicalRootPath);
-		} catch (error) {
-			await rm(lockPath, { recursive: true, force: true }).catch(() => undefined);
-			throw error;
-		}
-	}
-
-	private async recoverStaleLock(lockPath: string): Promise<boolean> {
-		let owner: LockOwner;
-		try {
-			const lockInfo = await lstat(lockPath);
-			assertPrivateDirectoryStats(lockInfo, 'Build-state lock directory');
-			const decoded = JSON.parse((await readPrivateFile(path.join(lockPath, 'owner.json'), {
-				label: 'Build-state lock owner',
-				maximumBytes: 4_096,
-			})).toString('utf8')) as unknown;
-			if (!isRecord(decoded) || typeof decoded.pid !== 'number' || typeof decoded.token !== 'string') return false;
-			owner = decoded as unknown as LockOwner;
-		} catch {
-			const lockStat = await lstat(lockPath);
-			assertPrivateDirectoryStats(lockStat, 'Build-state lock directory');
-			if (Date.now() - lockStat.mtimeMs < 30_000) return false;
-			owner = { schemaVersion: 1, pid: -1, token: 'orphan', createdAt: new Date(0).toISOString() };
-		}
-		if (owner.pid > 0 && isProcessAlive(owner.pid)) return false;
-		const stale = this.resolveRootChild(`.stale-lock-${randomBytes(12).toString('hex')}`);
-		try {
-			await rename(lockPath, stale);
-			await rm(stale, { recursive: true, force: true });
-			return true;
-		} catch (error) {
-			if (isNodeError(error, 'ENOENT')) return true;
-			throw error;
-		}
-	}
-
-	private async releaseLock(lockPath: string, token: string): Promise<void> {
-		try {
-			const decoded = JSON.parse((await readPrivateFile(path.join(lockPath, 'owner.json'), {
-				label: 'Build-state lock owner',
-				maximumBytes: 4_096,
-			})).toString('utf8')) as unknown;
-			if (!isRecord(decoded) || decoded.pid !== process.pid || decoded.token !== token) {
-				throw new Error('Build-state lock ownership changed before release.');
-			}
-			await rm(lockPath, { recursive: true });
-			await syncDirectory(this.canonicalRootPath);
-		} catch (error) {
-			if (!isNodeError(error, 'ENOENT')) throw error;
-		}
-	}
 }
 
 function validateCheckpoint<TArtifact>(checkpoint: CompilerCheckpoint<TArtifact>): void {
@@ -777,15 +705,6 @@ async function assertExistingPrivateTarget(
 		await assertPrivateFilePath(filePath, { label, maximumBytes });
 	} catch (error) {
 		if (!isNodeError(error, 'ENOENT')) throw error;
-	}
-}
-
-function isProcessAlive(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (error) {
-		return isNodeError(error, 'EPERM');
 	}
 }
 

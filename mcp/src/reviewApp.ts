@@ -53,6 +53,8 @@ export function renderTransmissionReviewApp(): string {
 			var pending = new Map();
 			var credentials = null;
 			var loaded = false;
+			var editable = true;
+			var reviewKind = 'query';
 			var title = document.getElementById('title');
 			var description = document.getElementById('description');
 			var badge = document.getElementById('badge');
@@ -95,6 +97,15 @@ export function renderTransmissionReviewApp(): string {
 				return bridgeRequest('tools/call', { name: name, arguments: args });
 			}
 
+			function assertToolSucceeded(result) {
+				if (!result || result.isError !== true) return;
+				var blocks = Array.isArray(result.content) ? result.content : [];
+				var firstText = blocks.find(function (block) {
+					return block && block.type === 'text' && typeof block.text === 'string';
+				});
+				throw new Error(firstText ? firstText.text : '组件工具调用失败');
+			}
+
 			function findNamedObject(value, key, depth, seen) {
 				if (!value || typeof value !== 'object' || depth > 8 || seen.has(value)) return null;
 				seen.add(value);
@@ -130,16 +141,32 @@ export function renderTransmissionReviewApp(): string {
 				title.textContent = draft.title || 'Obsidian → Codex 传输审核';
 				description.textContent = draft.description || '请审核后再发送。';
 				content.value = draft.content;
+				editable = draft.editable !== false;
+				reviewKind = draft.review_kind === 'controlled-write' ? 'controlled-write' : 'query';
+				content.readOnly = !editable;
+				content.setAttribute('aria-readonly', String(!editable));
+				content.setAttribute(
+					'aria-label',
+					editable ? '可编辑的待发送内容' : '不可编辑的受控操作审核内容'
+				);
+				if (reviewKind === 'controlled-write') {
+					approve.textContent = '确认并批准本次操作';
+					cancel.textContent = '取消，不执行操作';
+				}
 				loading.hidden = true;
 				content.hidden = false;
 				actions.hidden = false;
 				updateCount();
-				content.addEventListener('input', updateCount);
+				if (editable) content.addEventListener('input', updateCount);
 				content.focus();
 			}
 
 			function updateCount() {
-				metaLine.textContent = content.value.length.toLocaleString('zh-CN') + ' 个字符 · 可修改或删除任意内容 · 确认前 Codex 模型不可见';
+				metaLine.textContent = content.value.length.toLocaleString('zh-CN') + ' 个字符 · ' + (
+					editable
+						? '可修改或删除任意内容 · 确认前 Codex 模型不可见'
+						: '本审核不可编辑 · 请逐项核对后批准或取消'
+				);
 			}
 
 			function setBusy(isBusy) {
@@ -157,20 +184,27 @@ export function renderTransmissionReviewApp(): string {
 				setBusy(true);
 				errorBox.hidden = true;
 				try {
-					await callTool('submit_review_decision_for_ui', {
+					var result = await callTool('submit_review_decision_for_ui', {
 						review_id: credentials.review_id,
 						ui_token: credentials.ui_token,
 						action: action,
 						content: action === 'approve' ? content.value : undefined
 					});
+					assertToolSucceeded(result);
 					content.hidden = true;
 					actions.hidden = true;
 					loading.hidden = false;
 					badge.className = 'badge ' + (action === 'approve' ? 'approved' : 'cancelled');
-					badge.textContent = action === 'approve' ? '已确认发送' : '已取消';
+					badge.textContent = action === 'approve'
+						? (reviewKind === 'controlled-write' ? '操作已批准' : '已确认发送')
+						: '已取消';
 					loading.textContent = action === 'approve'
-						? '审核后的内容已获授权，Codex 现在可以领取。'
-						: '本次没有向 Codex 发送任何 Obsidian 正文。';
+						? (editable
+							? '审核后的内容已获授权，Codex 现在可以领取。'
+							: '未修改的受控操作审核已获明确批准。')
+						: (reviewKind === 'controlled-write'
+							? '本次操作已取消，未执行写入或撤销。'
+							: '本次没有向 Codex 发送任何 Obsidian 正文。');
 					metaLine.textContent = action === 'approve' ? '授权已完成。' : '私有草稿已清除。';
 				} catch (error) {
 					setBusy(false);

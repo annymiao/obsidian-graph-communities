@@ -11,6 +11,7 @@ import { HybridDeadlineError } from './text.js';
 import type {
 	EvidenceItem,
 	EvidencePack,
+	Bm25Artifact,
 	HybridEngineOptions,
 	HybridQuery,
 	HybridQueryOptions,
@@ -20,7 +21,7 @@ import type {
 	RerankerAdapter,
 	RetrievalFailure,
 } from './types.js';
-import { createVisibilityPredicate } from './visibility.js';
+import { createVisibilityPredicate, isRecordWithinTemporalBounds } from './visibility.js';
 
 const MAXIMUM_QUERY_DEADLINE_MS = 5_000;
 const DEFAULT_CANDIDATE_LIMIT = 40;
@@ -36,6 +37,7 @@ const MAXIMUM_QUERY_CHARACTERS = 32_000;
 export interface HybridEngineCreateOptions extends HybridEngineOptions {
 	embeddingAdapter?: EmbeddingAdapter;
 	vectorArtifact?: VectorArtifact;
+	bm25Artifact?: Bm25Artifact;
 }
 
 export class IdentityReranker implements RerankerAdapter {
@@ -204,6 +206,7 @@ export class HybridQueryEngine {
 			{ signal: controller.signal, deadlineAt: Number.MAX_SAFE_INTEGER },
 			adapter,
 			options.vectorArtifact,
+			options.bm25Artifact,
 		);
 		const engineOptions: HybridEngineOptions = {};
 		if (options.reranker !== undefined) engineOptions.reranker = options.reranker;
@@ -234,7 +237,11 @@ export class HybridQueryEngine {
 					return refusalPack(query, 'timeout', failures, deadline.deadlineMs, startedAt);
 				}
 				const record = this.#records[index];
-				if (record !== undefined && isVisible(record)) visible.push(record);
+				if (
+					record !== undefined
+					&& isVisible(record)
+					&& isRecordWithinTemporalBounds(record, query.temporal)
+				) visible.push(record);
 			}
 			const visibleIds = new Set(visible.map((record) => record.id));
 			const candidateLimit = boundedPositiveInteger(
@@ -361,7 +368,10 @@ export class HybridQueryEngine {
 				if (deadline.controller.signal.aborted || Date.now() >= deadline.deadlineAt) {
 					return refusalPack(query, 'timeout', failures, deadline.deadlineMs, startedAt);
 				}
-				if (!isVisible(candidate.record)) continue;
+				if (
+					!isVisible(candidate.record)
+					|| !isRecordWithinTemporalBounds(candidate.record, query.temporal)
+				) continue;
 				if (remainingCharacters <= 0) break;
 				const excerpt = extractiveCompress(
 					candidate.record.content,

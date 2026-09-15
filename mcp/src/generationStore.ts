@@ -13,6 +13,10 @@ import {
 	unlink,
 } from 'node:fs/promises';
 import path from 'node:path';
+import {
+	PrivateDirectoryLockBusyError,
+	withPrivateDirectoryLock,
+} from './persistence/privateDirectoryLock.js';
 
 export const GENERATION_STORE_SCHEMA_VERSION = 1 as const;
 
@@ -30,7 +34,6 @@ const DEFAULT_LOCK_TIMEOUT_MS = 5_000;
 const MAX_CONTROL_FILE_BYTES = 64 * 1024;
 const GENERATION_ID_PATTERN = /^gen-[0-9]{13}-[a-f0-9]{32}$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
-const LOCK_TOKEN_PATTERN = /^[a-f0-9]{32}$/;
 const NO_FOLLOW = constants.O_NOFOLLOW ?? 0;
 const DIRECTORY_FLAG = constants.O_DIRECTORY ?? 0;
 const READ_ONLY_FLAGS = constants.O_RDONLY | NO_FOLLOW;
@@ -86,13 +89,6 @@ interface GenerationPointer {
 	updatedAt: string;
 }
 
-interface WriterLockOwner {
-	schemaVersion: typeof GENERATION_STORE_SCHEMA_VERSION;
-	pid: number;
-	token: string;
-	createdAt: string;
-}
-
 interface DirectoryIdentity {
 	dev: number;
 	ino: number;
@@ -119,9 +115,16 @@ export class GenerationStoreCorruptionError extends GenerationStoreError {
 }
 
 export class GenerationStoreBusyError extends GenerationStoreError {
-	constructor(message: string) {
+	readonly code: 'GENERATION_STORE_LOCK_BUSY' | 'GENERATION_STORE_TRANSITION_GATE_BUSY';
+	readonly retryable: boolean;
+
+	constructor(message: string, transitionGateBusy = false) {
 		super(message);
 		this.name = 'GenerationStoreBusyError';
+		this.code = transitionGateBusy
+			? 'GENERATION_STORE_TRANSITION_GATE_BUSY'
+			: 'GENERATION_STORE_LOCK_BUSY';
+		this.retryable = true;
 	}
 }
 
@@ -419,6 +422,10 @@ export class GenerationStore {
 	 * Removes only immutable generations that are not named by CURRENT or
 	 * PREVIOUS. The visibility pointers are verified under the writer lock before
 	 * any managed directory is moved to staging and deleted.
+	 *
+	 * This generic store cannot see a second-brain runtime catalog's exact pins.
+	 * Never call it for catalog-managed generation roots until a catalog-aware
+	 * retention coordinator has included every published pin in the retain set.
 	 */
 	async pruneUnreferenced(): Promise<string[]> {
 		await this.ensureInitialized();
@@ -758,174 +765,25 @@ export class GenerationStore {
 	}
 
 	private async withWriterLock<T>(operation: () => Promise<T>): Promise<T> {
-		const token = randomBytes(16).toString('hex');
-		await this.acquireWriterLock(token);
-		try {
-			await this.assertStoreTopology();
-			return await operation();
-		} finally {
-			await this.releaseWriterLock(token);
-		}
-	}
-
-	private async acquireWriterLock(token: string): Promise<void> {
-		const deadline = Date.now() + this.lockTimeoutMs;
 		const lockPath = this.resolveRootChild(WRITER_LOCK_DIRECTORY);
-		for (;;) {
-			await this.assertStoreTopology();
-			const temporaryLockPath = this.resolveManagedPath(
-				STAGING_DIRECTORY,
-				`lock-${process.pid}-${randomBytes(16).toString('hex')}`,
+		try {
+			return await withPrivateDirectoryLock(
+				lockPath,
+				async () => {
+					await this.assertStoreTopology();
+					return operation();
+				},
+				{ timeoutMs: this.lockTimeoutMs },
 			);
-			await mkdir(temporaryLockPath, { mode: 0o700 });
-			const temporaryLockIdentity = await this.assertSafeDirectory(
-				temporaryLockPath,
-				'temporary writer lock',
-			);
-			const owner: WriterLockOwner = {
-				schemaVersion: GENERATION_STORE_SCHEMA_VERSION,
-				pid: process.pid,
-				token,
-				createdAt: new Date().toISOString(),
-			};
-			await writeNewFile(
-				this.resolveContainedFile(temporaryLockPath, 'owner.json'),
-				encodeControlJson(owner),
-			);
-			await syncDirectory(temporaryLockPath);
-			await this.assertDirectoryIdentity(
-				temporaryLockPath,
-				'temporary writer lock',
-				temporaryLockIdentity,
-			);
-			await this.assertStoreTopology();
-
-			let lockWasRenamed = false;
-			try {
-				await rename(temporaryLockPath, lockPath);
-				lockWasRenamed = true;
-				await syncDirectory(this.canonicalRootPath);
-				await this.assertStoreTopology();
-				await this.assertDirectoryIdentity(
-					lockPath,
-					'writer lock',
-					temporaryLockIdentity,
+		} catch (error) {
+			if (error instanceof PrivateDirectoryLockBusyError) {
+				throw new GenerationStoreBusyError(
+					error.message,
+					error.reason === 'transition-gate-busy',
 				);
-				return;
-			} catch (error) {
-				if (lockWasRenamed) throw error;
-				await this.assertDirectoryIdentity(
-					temporaryLockPath,
-					'temporary writer lock',
-					temporaryLockIdentity,
-				).catch((identityError) => {
-					throw identityError;
-				});
-				await rm(temporaryLockPath, { recursive: true, force: true });
-				await this.assertStoreTopology();
-				if (!isAlreadyExistsError(error)) throw error;
 			}
-
-			const recovered = await this.recoverAbandonedLock(lockPath);
-			if (recovered) continue;
-			if (Date.now() >= deadline) {
-				throw new GenerationStoreBusyError('Generation store writer lock is busy.');
-			}
-			await delay(Math.min(25, Math.max(1, deadline - Date.now())));
-		}
-	}
-
-	private async recoverAbandonedLock(lockPath: string): Promise<boolean> {
-		let owner: WriterLockOwner;
-		let lockIdentity: DirectoryIdentity;
-		try {
-			lockIdentity = await this.assertSafeDirectory(lockPath, 'writer lock');
-			owner = parseWriterLockOwner(await readSecureFile(
-				this.resolveContainedFile(lockPath, 'owner.json'),
-				MAX_CONTROL_FILE_BYTES,
-			));
-			await this.assertDirectoryIdentity(lockPath, 'writer lock', lockIdentity);
-			await this.assertStoreTopology();
-		} catch (error) {
-			if (isNodeError(error, 'ENOENT')) return true;
 			throw error;
 		}
-		if (isProcessAlive(owner.pid)) return false;
-
-		const abandonedPath = this.resolveManagedPath(
-			STAGING_DIRECTORY,
-			`abandoned-lock-${owner.token}-${randomBytes(8).toString('hex')}`,
-		);
-		try {
-			await this.assertDirectoryIdentity(lockPath, 'writer lock', lockIdentity);
-			await this.assertStoreTopology();
-			await rename(lockPath, abandonedPath);
-		} catch (error) {
-			if (isNodeError(error, 'ENOENT')) return true;
-			throw error;
-		}
-		await this.assertStoreTopology();
-		await this.assertDirectoryIdentity(
-			abandonedPath,
-			'abandoned writer lock',
-			lockIdentity,
-		);
-		const movedOwner = parseWriterLockOwner(await readSecureFile(
-			this.resolveContainedFile(abandonedPath, 'owner.json'),
-			MAX_CONTROL_FILE_BYTES,
-		));
-		if (movedOwner.token !== owner.token) {
-			throw new GenerationStoreCorruptionError('Writer lock changed during recovery.');
-		}
-		await this.assertDirectoryIdentity(
-			abandonedPath,
-			'abandoned writer lock',
-			lockIdentity,
-		);
-		await rm(abandonedPath, { recursive: true, force: true });
-		await this.assertStoreTopology();
-		await syncDirectory(this.canonicalRootPath);
-		return true;
-	}
-
-	private async releaseWriterLock(token: string): Promise<void> {
-		const lockPath = this.resolveRootChild(WRITER_LOCK_DIRECTORY);
-		const lockIdentity = await this.assertSafeDirectory(lockPath, 'writer lock');
-		const owner = parseWriterLockOwner(await readSecureFile(
-			this.resolveContainedFile(lockPath, 'owner.json'),
-			MAX_CONTROL_FILE_BYTES,
-		));
-		if (owner.pid !== process.pid || owner.token !== token) {
-			throw new GenerationStoreCorruptionError('Writer lock ownership changed before release.');
-		}
-		await this.assertDirectoryIdentity(lockPath, 'writer lock', lockIdentity);
-		await this.assertStoreTopology();
-		const releasedPath = this.resolveManagedPath(
-			STAGING_DIRECTORY,
-			`released-lock-${token}-${randomBytes(8).toString('hex')}`,
-		);
-		await rename(lockPath, releasedPath);
-		await this.assertStoreTopology();
-		await this.assertDirectoryIdentity(
-			releasedPath,
-			'released writer lock',
-			lockIdentity,
-		);
-		const movedOwner = parseWriterLockOwner(await readSecureFile(
-			this.resolveContainedFile(releasedPath, 'owner.json'),
-			MAX_CONTROL_FILE_BYTES,
-		));
-		if (movedOwner.pid !== process.pid || movedOwner.token !== token) {
-			throw new GenerationStoreCorruptionError('Writer lock changed during release.');
-		}
-		await this.assertDirectoryIdentity(
-			releasedPath,
-			'released writer lock',
-			lockIdentity,
-		);
-		await rm(releasedPath, { recursive: true, force: true });
-		await this.assertStoreTopology();
-		await syncDirectory(this.canonicalRootPath);
 	}
 
 	private resolveRootChild(name: string): string {
@@ -1183,37 +1041,6 @@ function parseGenerationPointer(bytes: Buffer): GenerationPointer {
 	return pointer;
 }
 
-function parseWriterLockOwner(bytes: Buffer): WriterLockOwner {
-	const value = parseControlJson(bytes, 'writer lock owner');
-	if (!isPlainRecord(value) || !hasExactKeys(value, [
-		'schemaVersion',
-		'pid',
-		'token',
-		'createdAt',
-	])) {
-		throw new GenerationStoreCorruptionError('Writer lock owner schema is invalid.');
-	}
-	if (
-		value.schemaVersion !== GENERATION_STORE_SCHEMA_VERSION
-		|| typeof value.pid !== 'number'
-		|| !Number.isSafeInteger(value.pid)
-		|| value.pid <= 0
-		|| typeof value.token !== 'string'
-		|| !LOCK_TOKEN_PATTERN.test(value.token)
-	) {
-		throw new GenerationStoreCorruptionError('Writer lock owner is invalid.');
-	}
-	assertIsoDate(value.createdAt, 'writer lock createdAt');
-	const owner: WriterLockOwner = {
-		schemaVersion: GENERATION_STORE_SCHEMA_VERSION,
-		pid: value.pid,
-		token: value.token,
-		createdAt: value.createdAt,
-	};
-	assertCanonicalControlJson(bytes, owner, 'writer lock owner');
-	return owner;
-}
-
 function parseControlJson(bytes: Buffer, label: string): unknown {
 	try {
 		return JSON.parse(bytes.toString('utf8')) as unknown;
@@ -1409,21 +1236,4 @@ function readPositiveSafeInteger(
 
 function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {
 	return error instanceof Error && 'code' in error && error.code === code;
-}
-
-function isAlreadyExistsError(error: unknown): boolean {
-	return isNodeError(error, 'EEXIST') || isNodeError(error, 'ENOTEMPTY');
-}
-
-function isProcessAlive(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (error) {
-		return !isNodeError(error, 'ESRCH');
-	}
-}
-
-function delay(milliseconds: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

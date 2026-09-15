@@ -22,6 +22,16 @@ export interface PrivateFileOptions {
 	minimumBytes?: number;
 }
 
+/** A bounded private file changed between two identity/length observations. */
+export class PrivateFileChangedError extends Error {
+	readonly code = 'PRIVATE_FILE_CHANGED' as const;
+
+	constructor(message: string) {
+		super(message);
+		this.name = 'PrivateFileChangedError';
+	}
+}
+
 /**
  * POSIX boundary: private directories are owned by the effective user and have
  * no group/other permission bits; private files additionally have no execute or
@@ -143,7 +153,7 @@ export async function readPrivateFile(
 		const after = await assertPrivateFileHandle(handle, options);
 		assertStableFileIdentity(before, after, options.label);
 		if (bytes.byteLength !== after.size) {
-			throw new Error(`${options.label} changed length while being read.`);
+			throw new PrivateFileChangedError(`${options.label} changed length while being read.`);
 		}
 		const pathAfter = await lstat(filePath);
 		assertPrivateRegularFileStats(pathAfter, options);
@@ -161,7 +171,7 @@ export function assertStableFileIdentity(first: Stats, second: Stats, label: str
 		|| first.size !== second.size
 		|| first.mtimeMs !== second.mtimeMs
 		|| first.ctimeMs !== second.ctimeMs
-	) throw new Error(`${label} changed while being accessed.`);
+	) throw new PrivateFileChangedError(`${label} changed while being accessed.`);
 }
 
 export async function syncPrivateDirectory(

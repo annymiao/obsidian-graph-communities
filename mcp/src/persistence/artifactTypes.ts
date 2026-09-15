@@ -87,10 +87,26 @@ export interface CompactLexicalDelta {
 	index: CompactPostingIndex;
 }
 
+/**
+ * Chunk identities are kept beside their compact ordinal index so an online
+ * retriever can prove that every posting belongs to the exact compiled chunk
+ * version it is about to serve.
+ */
+export interface CompactChunkLexicalArtifact {
+	schemaVersion: typeof COMPILED_ARTIFACT_SCHEMA_VERSION;
+	records: Array<{
+		recordId: string;
+		versionId: string;
+	}>;
+	index: CompactPostingIndex;
+}
+
 export interface CompactLexicalArtifact {
 	schemaVersion: typeof COMPILED_ARTIFACT_SCHEMA_VERSION;
 	base: CompactPostingIndex;
 	deltas: CompactLexicalDelta[];
+	/** Required by the compiled second-brain runtime; legacy generations must be recompiled. */
+	chunkIndex: CompactChunkLexicalArtifact;
 }
 
 export interface TemporalArtifact {

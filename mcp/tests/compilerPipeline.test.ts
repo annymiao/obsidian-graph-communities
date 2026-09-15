@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -7,8 +8,11 @@ import {
 	OfflineKnowledgeCompiler,
 	type EmbeddingProvider,
 } from '../src/compiler/offlineKnowledgeCompiler.js';
+import { DeterministicLocalEmbedding } from '../src/hybrid/embedding.js';
 import { BuildStateStore } from '../src/persistence/buildStateStore.js';
-import { materializeLexicalArtifact } from '../src/persistence/compactLexical.js';
+import { canonicalJson, hashCanonicalJson } from '../src/persistence/canonicalJson.js';
+import { decodeCompactPostingIndex, materializeLexicalArtifact } from '../src/persistence/compactLexical.js';
+import { loadCompiledSource } from '../src/secondBrain/artifactLoader.js';
 
 interface CompilerFixture {
 	root: string;
@@ -191,7 +195,131 @@ test('chunk vectors are persisted by recordId/versionId and unchanged files do n
 
 		const second = await compiler.build();
 		assert.equal(second.reusedFiles, 1);
+		assert.equal(
+			second.generation.generationId,
+			first.generation.generationId,
+			'an unchanged watch pass must not publish another immutable generation',
+		);
 		assert.equal(calls, 1, 'persisted vectors must be reused instead of recomputed at startup/build');
+
+		const generationPath = path.join(
+			fixture.generations,
+			'generations',
+			first.generation.generationId,
+		);
+		const payloadPath = path.join(generationPath, 'payload.json');
+		const payload = JSON.parse(await readFile(payloadPath, 'utf8')) as typeof first.generation.bundle;
+		assert.ok(payload.layers.vector);
+		payload.layers.vector.data.modelId = 'forged-self-described-model';
+		payload.layers.vector.sha256 = hashCanonicalJson(payload.layers.vector.data);
+		payload.layers.vector.byteLength = Buffer.byteLength(
+			canonicalJson(payload.layers.vector.data),
+			'utf8',
+		);
+		const payloadBytes = Buffer.from(JSON.stringify(payload), 'utf8');
+		await writeFile(payloadPath, payloadBytes);
+		const manifestPath = path.join(generationPath, 'manifest.json');
+		const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as {
+			payload: { byteLength: number; sha256: string };
+		};
+		manifest.payload.byteLength = payloadBytes.byteLength;
+		manifest.payload.sha256 = createHash('sha256').update(payloadBytes).digest('hex');
+		const manifestBytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+		await writeFile(manifestPath, manifestBytes);
+		const manifestSha256 = createHash('sha256').update(manifestBytes).digest('hex');
+		for (const pointerPath of [
+			path.join(generationPath, 'READY'),
+			path.join(fixture.generations, 'CURRENT'),
+		]) {
+			const pointer = JSON.parse(await readFile(pointerPath, 'utf8')) as { manifestSha256: string };
+			pointer.manifestSha256 = manifestSha256;
+			await writeFile(pointerPath, `${JSON.stringify(pointer, null, 2)}\n`, 'utf8');
+		}
+		assert.equal((await compiler.readCurrent())?.generationId, first.generation.generationId);
+		const rebuilt = await compiler.build();
+		assert.notEqual(rebuilt.generation.generationId, first.generation.generationId);
+		assert.equal(calls, 2, 'configured embedding contract must reject a forged persisted self-contract');
+		assert.equal(rebuilt.generation.bundle.layers.vector?.data.modelId, provider.modelId);
+	});
+});
+
+test('semantically corrupt but fully rehashed CURRENT is rebuilt instead of reused as a no-op', async () => {
+	await withCompilerFixture(async (fixture) => {
+		await writeNote(
+			fixture.source,
+			'30-Shared-Knowledge/rebuild.md',
+			'# Rebuild proof\nclean source evidence must survive semantic recovery',
+		);
+		const compiler = new OfflineKnowledgeCompiler({
+			sourceRoot: fixture.source,
+			stateRoot: fixture.state,
+			generationRoot: fixture.generations,
+		});
+		const first = await compiler.build();
+		const generationPath = path.join(
+			fixture.generations,
+			'generations',
+			first.generation.generationId,
+		);
+		const payloadPath = path.join(generationPath, 'payload.json');
+		const payload = JSON.parse(await readFile(payloadPath, 'utf8')) as typeof first.generation.bundle;
+		const temporalEntry = payload.layers.temporal.data.byOrdinal[0];
+		assert.ok(temporalEntry);
+		// Break the temporal-to-derived/catalog relationship, then deliberately
+		// rebuild every integrity envelope so filesystem/hash validation still passes.
+		temporalEntry.mtimeMs += 1;
+		payload.layers.temporal.sha256 = hashCanonicalJson(payload.layers.temporal.data);
+		payload.layers.temporal.byteLength = Buffer.byteLength(
+			canonicalJson(payload.layers.temporal.data),
+			'utf8',
+		);
+		const payloadBytes = Buffer.from(JSON.stringify(payload), 'utf8');
+		await writeFile(payloadPath, payloadBytes);
+
+		const manifestPath = path.join(generationPath, 'manifest.json');
+		const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as {
+			payload: { byteLength: number; sha256: string };
+		};
+		manifest.payload.byteLength = payloadBytes.byteLength;
+		manifest.payload.sha256 = createHash('sha256').update(payloadBytes).digest('hex');
+		const manifestBytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+		await writeFile(manifestPath, manifestBytes);
+		const manifestSha256 = createHash('sha256').update(manifestBytes).digest('hex');
+
+		const readyPath = path.join(generationPath, 'READY');
+		const ready = JSON.parse(await readFile(readyPath, 'utf8')) as { manifestSha256: string };
+		ready.manifestSha256 = manifestSha256;
+		await writeFile(readyPath, `${JSON.stringify(ready, null, 2)}\n`, 'utf8');
+		const currentPath = path.join(fixture.generations, 'CURRENT');
+		const current = JSON.parse(await readFile(currentPath, 'utf8')) as { manifestSha256: string };
+		current.manifestSha256 = manifestSha256;
+		await writeFile(currentPath, `${JSON.stringify(current, null, 2)}\n`, 'utf8');
+
+		assert.equal(
+			(await compiler.readCurrent())?.generationId,
+			first.generation.generationId,
+			'the corrupted generation must remain storage-valid after every hash is repaired',
+		);
+		const rebuilt = await compiler.build();
+		assert.notEqual(rebuilt.generation.generationId, first.generation.generationId);
+		assert.equal(rebuilt.compiledFiles, 1);
+		assert.equal(rebuilt.reusedFiles, 0);
+
+		const loaded = await loadCompiledSource(
+			{
+				sourceId: compiler.sourceId,
+				label: 'synthetic semantic rebuild',
+				kind: 'directory',
+				generationRoot: fixture.generations,
+				pinnedGenerationId: rebuilt.generation.generationId,
+				pinnedManifestSha256: rebuilt.generation.manifestSha256,
+			},
+			new DeterministicLocalEmbedding(32),
+			false,
+		);
+		assert.equal(loaded.generation.generationId, rebuilt.generation.generationId);
+		assert.equal(loaded.activeDocuments, 1);
+		assert.match(loaded.records[0]?.content ?? '', /clean source evidence/u);
 	});
 });
 
@@ -283,6 +411,19 @@ test('incremental deletion promotes an exact duplicate, propagates posting delet
 		});
 		const first = await compiler.build();
 		assert.equal(first.duplicateFiles, 1);
+		const chunkLexical = first.generation.bundle.layers.lexical.data.chunkIndex;
+		assert.ok(chunkLexical);
+		const compiledChunks = first.generation.bundle.layers.derived.data.documents.flatMap(
+			(document) => document.chunks.map((chunk) => ({
+				recordId: chunk.chunkId,
+				versionId: document.versionId,
+			})),
+		);
+		assert.deepEqual(chunkLexical.records, compiledChunks);
+		assert.equal(
+			decodeCompactPostingIndex(chunkLexical.index).documentLengths.size,
+			compiledChunks.length,
+		);
 		const firstCatalog = first.generation.bundle.layers.catalog.data.entries;
 		const a = firstCatalog.find((entry) => entry.path === 'Research/a.md');
 		const b = firstCatalog.find((entry) => entry.path === 'Research/b.md');

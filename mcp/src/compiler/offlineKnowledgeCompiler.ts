@@ -1,6 +1,10 @@
 import path from 'node:path';
 import { chunkMarkdown, parseMarkdownHeadings } from '../markdownChunks.js';
-import { EMBEDDING_INPUT_RECIPE, recordSearchText } from '../hybrid/embedding.js';
+import {
+	EMBEDDING_INPUT_RECIPE,
+	recordSearchText,
+	type EmbeddingAdapter,
+} from '../hybrid/embedding.js';
 import { countTokens } from '../hybrid/text.js';
 import {
 	COMPILED_ARTIFACT_SCHEMA_VERSION,
@@ -37,6 +41,7 @@ import {
 	type SourceId,
 } from '../stableIds.js';
 import type { KnowledgeCorpus, RetrievalScope } from '../types.js';
+import { validateCompiledSourceGeneration } from '../secondBrain/artifactLoader.js';
 import {
 	createDefaultScanPolicy,
 	scanSourceDirectory,
@@ -44,7 +49,17 @@ import {
 	type SourceScanPolicy,
 } from './sourceScanner.js';
 
-export const OFFLINE_COMPILER_VERSION = 'v1.3-five-plane-compiler-1' as const;
+export const OFFLINE_COMPILER_VERSION = 'v1.3-five-plane-compiler-2' as const;
+
+/** A normal concurrent source edit invalidated the captured scan; a watch loop may retry. */
+export class SourceChangedDuringCompilationError extends Error {
+	readonly code = 'SOURCE_CHANGED_DURING_COMPILATION' as const;
+
+	constructor() {
+		super('Source changed during offline compilation; no generation was published.');
+		this.name = 'SourceChangedDuringCompilationError';
+	}
+}
 
 const SCOPE_CORPUS: Record<Exclude<RetrievalScope, 'never'>, KnowledgeCorpus> = {
 	default: 'core',
@@ -174,6 +189,7 @@ export class OfflineKnowledgeCompiler {
 	readonly policy: OfflineCompilerPolicy;
 
 	private readonly sourceRoot: string;
+	private readonly generationRoot: string;
 	private readonly baseScope: Exclude<RetrievalScope, 'never'>;
 	private readonly baseCorpus: KnowledgeCorpus;
 	private readonly enforceTrustedScope: boolean;
@@ -185,6 +201,7 @@ export class OfflineKnowledgeCompiler {
 
 	constructor(options: OfflineKnowledgeCompilerOptions) {
 		this.sourceRoot = path.resolve(options.sourceRoot);
+		this.generationRoot = path.resolve(options.generationRoot);
 		this.sourceId = options.trustedSource?.sourceId ?? createSourceId(this.sourceRoot);
 		// Validate a caller-supplied source ID with the stable-ID implementation.
 		createDocumentId(this.sourceId, '__source-id-validation__.md');
@@ -211,13 +228,13 @@ export class OfflineKnowledgeCompiler {
 			projectId: this.projectId,
 			baseScope: this.baseScope,
 			baseCorpus: this.baseCorpus,
-					embedding: this.embeddingProvider
+			embedding: this.embeddingProvider
 				? {
 					adapterId: this.embeddingProvider.adapterId,
 					modelId: this.embeddingProvider.modelId,
 					kind: this.embeddingProvider.kind,
-						dimensions: this.embeddingProvider.dimensions,
-						inputRecipe: EMBEDDING_INPUT_RECIPE,
+					dimensions: this.embeddingProvider.dimensions,
+					inputRecipe: EMBEDDING_INPUT_RECIPE,
 				}
 				: null,
 		});
@@ -254,8 +271,45 @@ export class OfflineKnowledgeCompiler {
 		}
 
 		const current = await this.generations.readCurrent();
-		const previousBundle = current?.bundle ?? null;
+		const currentIsSemanticallyValid = current === null
+			? false
+			: await this.isGenerationSemanticallyValid(current);
+		const previousBundle = currentIsSemanticallyValid ? current?.bundle ?? null : null;
 		const canReusePrevious = previousBundle?.policyHash === this.policyHash;
+		const canReturnCurrent = (
+			current !== null
+			&& current.bundle.compilerVersion === OFFLINE_COMPILER_VERSION
+			&& canReusePrevious
+			&& scanMatchesPublishedGeneration(
+				scan.files,
+				current.bundle,
+				this.embeddingProvider !== undefined,
+			)
+			&& (!(options.forceCompaction ?? false) || current.bundle.layers.lexical.data.deltas.length === 0)
+		);
+		if (canReturnCurrent) {
+			const verifiedScan = await scanSourceDirectory(this.sourceRoot, this.policy);
+			if (createScanPlanHash(this.policyHash, verifiedScan.files) !== planHash) {
+				throw new SourceChangedDuringCompilationError();
+			}
+			await this.state.appendJournal({
+				...journalInput(now, 'scan-completed', checkpoint.buildId),
+				generationId: current.generationId,
+			});
+			await this.state.clearCheckpoint();
+			await this.state.compactJournal(this.policy.journalRetentionRecords);
+			return {
+				generation: current,
+				buildId: checkpoint.buildId,
+				compiledFiles: 0,
+				reusedFiles: scan.files.length,
+				resumedFiles: 0,
+				tombstonedFiles: 0,
+				duplicateFiles: current.bundle.statistics.duplicates,
+				compacted: false,
+				skippedSymlinks: verifiedScan.skippedSymlinks,
+			};
+		}
 		const previousCatalog = new Map(
 			(previousBundle?.layers.catalog.data.entries ?? []).map((entry) => [entry.path, entry]),
 		);
@@ -337,7 +391,7 @@ export class OfflineKnowledgeCompiler {
 		// non-adversarial source boundary.
 		const verifiedScan = await scanSourceDirectory(this.sourceRoot, this.policy);
 		if (createScanPlanHash(this.policyHash, verifiedScan.files) !== planHash) {
-			throw new Error('Source changed during offline compilation; no generation was published.');
+			throw new SourceChangedDuringCompilationError();
 		}
 
 		const generation = await this.generations.publish({
@@ -381,6 +435,39 @@ export class OfflineKnowledgeCompiler {
 			compacted: assembled.compacted,
 			skippedSymlinks: scan.skippedSymlinks,
 		};
+	}
+
+	private async isGenerationSemanticallyValid(
+		generation: PublishedArtifactGeneration,
+	): Promise<boolean> {
+		const validationAdapter: EmbeddingAdapter = {
+			id: this.embeddingProvider?.adapterId ?? 'offline-no-vector',
+			modelId: this.embeddingProvider?.modelId ?? 'offline-no-vector',
+			kind: this.embeddingProvider?.kind ?? 'lexical_hash',
+			dimension: this.embeddingProvider?.dimensions ?? 1,
+			embed: async () => {
+				throw new Error('Compiler validation adapters do not execute embeddings.');
+			},
+		};
+		try {
+			await validateCompiledSourceGeneration(
+				{
+					sourceId: this.sourceId,
+					label: 'offline-compiler-validation',
+					kind: 'directory',
+					generationRoot: this.generationRoot,
+					pinnedGenerationId: generation.generationId,
+					pinnedManifestSha256: generation.manifestSha256,
+					...(this.projectId === null ? {} : { projectId: this.projectId }),
+				},
+				validationAdapter,
+				this.embeddingProvider !== undefined,
+				generation,
+			);
+			return true;
+		} catch {
+			return false;
+		}
 	}
 
 	private async compileFile(file: ScannedSourceFile): Promise<CompiledFileUnit> {
@@ -598,22 +685,22 @@ export class OfflineKnowledgeCompiler {
 			if (previousActive.get(ordinal) !== hash) replacedOrdinals.add(ordinal);
 		}
 		const allInputs = documents.map(toLexicalInput);
-		let lexical: CompactLexicalArtifact;
+		let documentLexical: Omit<CompactLexicalArtifact, 'chunkIndex'>;
 		let compacted = false;
 		if (!previousLexical || previousCatalog?.policyHash !== this.policyHash) {
-			lexical = {
+			documentLexical = {
 				schemaVersion: COMPILED_ARTIFACT_SCHEMA_VERSION,
 				base: buildCompactPostingIndex(allInputs),
 				deltas: [],
 			};
 			compacted = true;
 		} else if (replacedOrdinals.size === 0) {
-			lexical = forceCompaction && previousLexical.deltas.length > 0
+			documentLexical = forceCompaction && previousLexical.deltas.length > 0
 				? compactLexicalArtifact(previousLexical)
 				: previousLexical;
 			compacted = forceCompaction && previousLexical.deltas.length > 0;
 		} else {
-			lexical = {
+			documentLexical = {
 				schemaVersion: COMPILED_ARTIFACT_SCHEMA_VERSION,
 				base: previousLexical.base,
 				deltas: [
@@ -630,13 +717,36 @@ export class OfflineKnowledgeCompiler {
 			const replacementRatio = replacedOrdinals.size / Math.max(1, currentActive.size);
 			if (
 				forceCompaction
-				|| lexical.deltas.length >= this.policy.lexicalDeltaCompactionThreshold
+				|| documentLexical.deltas.length >= this.policy.lexicalDeltaCompactionThreshold
 				|| replacementRatio >= this.policy.lexicalReplacementCompactionRatio
 			) {
-				lexical = compactLexicalArtifact(lexical);
+				documentLexical = compactLexicalArtifact({
+					...documentLexical,
+					chunkIndex: previousLexical.chunkIndex,
+				});
 				compacted = true;
 			}
 		}
+		let chunkOrdinal = 0;
+		const chunkRecords: Array<{ recordId: string; versionId: string }> = [];
+		const chunkInputs = documents.flatMap((document) => document.chunks.map((chunk) => {
+			const ordinal = chunkOrdinal;
+			chunkOrdinal += 1;
+			chunkRecords.push({ recordId: chunk.chunkId, versionId: document.versionId });
+			return {
+				ordinal,
+				documentLength: Math.max(1, chunk.tokenCount),
+				termFrequencies: chunk.termFrequencies,
+			};
+		}));
+		const lexical: CompactLexicalArtifact = {
+			...documentLexical,
+			chunkIndex: {
+				schemaVersion: COMPILED_ARTIFACT_SCHEMA_VERSION,
+				records: chunkRecords,
+				index: buildCompactPostingIndex(chunkInputs),
+			},
+		};
 
 		const temporal: TemporalArtifact = {
 			schemaVersion: COMPILED_ARTIFACT_SCHEMA_VERSION,
@@ -699,6 +809,32 @@ export class OfflineKnowledgeCompiler {
 			compacted,
 		};
 	}
+}
+
+function scanMatchesPublishedGeneration(
+	files: readonly ScannedSourceFile[],
+	bundle: PublishedArtifactGeneration['bundle'],
+	requireVector: boolean,
+): boolean {
+	const entries = bundle.layers.catalog.data.entries.filter((entry) => entry.tombstoneAt === null);
+	if (
+		entries.length !== files.length
+		|| (bundle.layers.vector !== null) !== requireVector
+		|| bundle.layers.lexical.data.chunkIndex === undefined
+	) return false;
+	const entriesByPath = new Map(entries.map((entry) => [entry.path, entry]));
+	if (entriesByPath.size !== entries.length) return false;
+	for (const file of files) {
+		const entry = entriesByPath.get(file.path);
+		if (
+			entry === undefined
+			|| entry.contentSha256 !== file.contentSha256
+			|| entry.normalizedContentSha256 !== file.normalizedContentSha256
+			|| entry.byteLength !== file.byteLength
+			|| entry.mtimeMs !== file.mtimeMs
+		) return false;
+	}
+	return true;
 }
 
 function mergePolicy(overrides: Partial<OfflineCompilerPolicy> | undefined): OfflineCompilerPolicy {

@@ -153,8 +153,13 @@ test('five-layer runtime queries only compiled generations and closes the human-
 		const writePrincipal: SecondBrainPrincipalPolicy = {
 			...generalPrincipal,
 			principalId: 'synthetic-path-scoped-writer',
+			includedPathPrefixes: ['30-Shared-Knowledge'],
+			excludedPathPrefixes: ['30-Shared-Knowledge/blocked'],
+		};
+		const caseMismatchPrincipal: SecondBrainPrincipalPolicy = {
+			...generalPrincipal,
+			principalId: 'synthetic-case-mismatch-client',
 			includedPathPrefixes: ['30-shared-knowledge'],
-			excludedPathPrefixes: ['30-shared-knowledge/blocked'],
 		};
 		const excludedWriter: SecondBrainPrincipalPolicy = {
 			...writePrincipal,
@@ -166,6 +171,15 @@ test('five-layer runtime queries only compiled generations and closes the human-
 		assert.equal(core.status, 'ok');
 		assert.ok(core.deadlineMs <= 4_980, 'runtime must reserve overhead inside the five-second hard limit');
 		assert.equal(core.evidence[0]?.sourceId, sourceId);
+		const caseMismatchRead = await runtime.query(caseMismatchPrincipal, {
+			text: 'orion durable anchor',
+			mode: 'default',
+		});
+		assert.equal(
+			caseMismatchRead.status,
+			'no_evidence',
+			'path ACLs must not fold case on a case-sensitive source',
+		);
 		const boundRead = runtime.bindRead(generalPrincipal);
 		const boundCore = await boundRead.query({ text: 'orion durable anchor', mode: 'default' });
 		assert.equal(boundCore.status, 'ok');
@@ -199,6 +213,17 @@ test('five-layer runtime queries only compiled generations and closes the human-
 		assert.equal(serializedStatus.includes(root), false);
 		assert.equal(serializedStatus.includes('orion durable anchor'), false);
 
+		await assert.rejects(
+			runtime.prepareWrite({
+				principal: caseMismatchPrincipal,
+				sourceId,
+				documentPath: '30-Shared-Knowledge/editable.md',
+				operation: 'replace',
+				rationale: 'A case-colliding include prefix must not authorize a write.',
+				afterContent: corrected,
+			}),
+			/not writable/u,
+		);
 		await assert.rejects(
 			runtime.prepareWrite({
 				principal: excludedWriter,
@@ -316,6 +341,190 @@ test('five-layer runtime queries only compiled generations and closes the human-
 	}
 });
 
+test('controlled reingest validates the exact generation before publishing its durable pin', async () => {
+	const root = await mkdtemp(path.join(tmpdir(), 'second-brain-reingest-validation-'));
+	try {
+		const sourceRoot = path.join(root, 'source');
+		const stateRoot = path.join(root, 'compiler-state');
+		const generationRoot = path.join(root, 'generations');
+		const sourceId = createSourceId('synthetic:reingest-validation');
+		const baseline = '---\ntype: knowledge-card\nstatus: active\n---\n# Note\n\namber stable baseline.\n';
+		const corrected = '---\ntype: knowledge-card\nstatus: active\n---\n# Note\n\nnebula corrected marker.\n';
+		await writeNote(sourceRoot, '30-Shared-Knowledge/note.md', baseline);
+		const embedding = new DeterministicLocalEmbedding(32);
+		const authoritativeCompiler = new OfflineKnowledgeCompiler({
+			sourceRoot,
+			stateRoot,
+			generationRoot,
+			trustedSource: { sourceId },
+			embeddingProvider: createOfflineEmbeddingProvider(embedding),
+		});
+		const initial = await authoritativeCompiler.build();
+		const nonexistentGenerationId = `gen-0000000000000-${'f'.repeat(32)}`;
+		const returningInvalidPin = {
+			sourceId: authoritativeCompiler.sourceId,
+			projectId: authoritativeCompiler.projectId,
+			policyHash: authoritativeCompiler.policyHash,
+			policy: authoritativeCompiler.policy,
+			async build() {
+				const built = await authoritativeCompiler.build();
+				return {
+					...built,
+					generation: { ...built.generation, generationId: nonexistentGenerationId },
+				};
+			},
+			readCurrent: () => authoritativeCompiler.readCurrent(),
+			readGeneration: (generationId: string) => authoritativeCompiler.readGeneration(generationId),
+		} as unknown as OfflineKnowledgeCompiler;
+		const adapter = new SafeDirectoryWriterAdapter({
+			adapterId: 'reingest-validation-directory',
+			sourceId,
+			rootPath: sourceRoot,
+			statePath: path.join(root, 'writer-state'),
+		});
+		const broker: HumanApprovalBroker = {
+			async requestApproval(review) {
+				return { approved: true, bindingHash: review.bindingHash, approvedBy: 'synthetic-human' };
+			},
+		};
+		let publishedPins = 0;
+		const runtime = await SecondBrainRuntime.open({
+			sources: [{
+				sourceId,
+				label: 'Reingest validation',
+				kind: 'directory',
+				generationRoot,
+				pinnedGenerationId: initial.generation.generationId,
+				pinnedManifestSha256: initial.generation.manifestSha256,
+				writable: { compiler: returningInvalidPin, adapter },
+			}],
+			embeddingAdapter: embedding,
+			humanApprovalBroker: broker,
+			approvalSecret: 'reingest-validation-secret-material-32-bytes',
+			writeStateRoot: path.join(root, 'write-state'),
+			onGenerationPublished: async () => {
+				publishedPins += 1;
+			},
+		});
+		const principal: SecondBrainPrincipalPolicy = {
+			principalId: 'synthetic-writer',
+			allowedSourceIds: [sourceId],
+			allowedModes: ['default'],
+		};
+		const revisionBefore = runtime.status(principal).revision;
+		const prepared = await runtime.prepareWrite({
+			principal,
+			sourceId,
+			documentPath: '30-Shared-Knowledge/note.md',
+			operation: 'replace',
+			rationale: 'Exercise exact generation validation before durable publication.',
+			afterContent: corrected,
+		});
+		const receipt = await runtime.approveAndCommitWrite(prepared.preparedId);
+		assert.equal(receipt.outcome, 'committed_but_degraded');
+		assert.equal(receipt.reingest.searchable, false);
+		assert.equal(publishedPins, 0, 'an unvalidated generation must never reach the catalog hook');
+		assert.equal(runtime.status(principal).revision, revisionBefore);
+		const oldView = await runtime.query(principal, { text: 'amber stable baseline', mode: 'default' });
+		assert.equal(oldView.status, 'ok', 'failed reingest must retain the prior in-memory generation');
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test('concurrent controlled writes serialize the complete reingest and catalog-pin transition per source', async () => {
+	const root = await mkdtemp(path.join(tmpdir(), 'second-brain-concurrent-reingest-'));
+	try {
+		const sourceRoot = path.join(root, 'source');
+		const generationRoot = path.join(root, 'generations');
+		const sourceId = createSourceId('synthetic:concurrent-reingest');
+		await writeNote(sourceRoot, 'seed.md', '# Seed\n\nstable seed evidence.\n');
+		const embedding = new DeterministicLocalEmbedding(32);
+		const compiler = new OfflineKnowledgeCompiler({
+			sourceRoot,
+			stateRoot: path.join(root, 'compiler-state'),
+			generationRoot,
+			trustedSource: { sourceId },
+			embeddingProvider: createOfflineEmbeddingProvider(embedding),
+		});
+		const initial = await compiler.build();
+		const adapter = new SafeDirectoryWriterAdapter({
+			adapterId: 'concurrent-reingest-directory',
+			sourceId,
+			rootPath: sourceRoot,
+			statePath: path.join(root, 'writer-state'),
+		});
+		const broker: HumanApprovalBroker = {
+			async requestApproval(review) {
+				return { approved: true, bindingHash: review.bindingHash, approvedBy: 'synthetic-human' };
+			},
+		};
+		let durableGenerationId = initial.generation.generationId;
+		let durableManifestSha256 = initial.generation.manifestSha256;
+		const transitions: Array<{ expected: string; target: string }> = [];
+		const runtime = await SecondBrainRuntime.open({
+			sources: [{
+				sourceId,
+				label: 'Concurrent reingest',
+				kind: 'directory',
+				generationRoot,
+				pinnedGenerationId: durableGenerationId,
+				pinnedManifestSha256: durableManifestSha256,
+				writable: { compiler, adapter },
+			}],
+			embeddingAdapter: embedding,
+			humanApprovalBroker: broker,
+			approvalSecret: 'concurrent-reingest-secret-material-32-bytes',
+			writeStateRoot: path.join(root, 'write-state'),
+			onGenerationPublished: async (
+				_sourceId,
+				generationId,
+				manifestSha256,
+				expectedGenerationId,
+				expectedManifestSha256,
+			) => {
+				assert.equal(expectedGenerationId, durableGenerationId);
+				assert.equal(expectedManifestSha256, durableManifestSha256);
+				transitions.push({ expected: expectedGenerationId, target: generationId });
+				durableGenerationId = generationId;
+				durableManifestSha256 = manifestSha256;
+			},
+		});
+		const principal: SecondBrainPrincipalPolicy = {
+			principalId: 'synthetic-concurrent-writer',
+			allowedSourceIds: [sourceId],
+			allowedModes: ['default'],
+		};
+		const contents = [
+			'---\ntype: knowledge-card\nstatus: active\n---\n# First\n\ncerulean concurrent marker.\n',
+			'---\ntype: knowledge-card\nstatus: active\n---\n# Second\n\nmagenta concurrent marker.\n',
+		];
+		const prepared = await Promise.all(contents.map((afterContent, index) => runtime.prepareWrite({
+			principal,
+			sourceId,
+			documentPath: `concurrent-${index + 1}.md`,
+			operation: 'create',
+			rationale: 'Exercise per-source reingest serialization.',
+			afterContent,
+		})));
+		const receipts = await Promise.all(prepared.map((review) => (
+			runtime.approveAndCommitWrite(review.preparedId)
+		)));
+		assert.ok(receipts.every((receipt) => receipt.outcome === 'committed'));
+		assert.ok(receipts.every((receipt) => receipt.reingest.searchable));
+		assert.equal(transitions.length, 2);
+		assert.equal(transitions[1]?.expected, transitions[0]?.target);
+		assert.equal(runtime.status(principal).sources[0]?.generationId, durableGenerationId);
+		const durable = await compiler.readGeneration(durableGenerationId);
+		assert.deepEqual(
+			durable.bundle.layers.derived.data.documents.map((document) => document.path).sort(),
+			['concurrent-1.md', 'concurrent-2.md', 'seed.md'],
+		);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 test('runtime rejects independently rehashed cross-layer semantic drift', async () => {
 	const root = await mkdtemp(path.join(tmpdir(), 'second-brain-layer-drift-synthetic-'));
 	try {
@@ -367,6 +576,20 @@ test('runtime rejects independently rehashed cross-layer semantic drift', async 
 				},
 			},
 			{
+				name: 'required chunk lexical index missing',
+				mutate(bundle) {
+					delete (bundle.layers.lexical.data as { chunkIndex?: unknown }).chunkIndex;
+				},
+			},
+			{
+				name: 'chunk lexical version drift',
+				mutate(bundle) {
+					const identity = bundle.layers.lexical.data.chunkIndex.records[0];
+					assert.ok(identity);
+					identity.versionId = `ver_v1_${'A'.repeat(43)}`;
+				},
+			},
+			{
 				name: 'lexical posting drift',
 				mutate(bundle) {
 					const materialized = materializeLexicalArtifact(bundle.layers.lexical.data);
@@ -393,6 +616,7 @@ test('runtime rejects independently rehashed cross-layer semantic drift', async 
 							}),
 						)),
 						deltas: [],
+						chunkIndex: bundle.layers.lexical.data.chunkIndex,
 					};
 				},
 			},

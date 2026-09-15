@@ -8,6 +8,7 @@ import {
 	ExactVectorIndex,
 	HybridQueryEngine,
 	HybridDeadlineError,
+	TemporalRetriever,
 	extractiveCompress,
 } from '../src/hybrid/index.js';
 import type {
@@ -164,6 +165,72 @@ test('RRF output is near-deduplicated, diversified, and extractively compressed'
 	const excerpt = extractiveCompress(repeated, 'signed local artifact', 100);
 	assert.match(excerpt.text, /signed local artifact/u);
 	assert.doesNotMatch(excerpt.text, /invented/u);
+});
+
+test('explicit temporal bounds are global hard filters while preferRecent remains soft', async () => {
+	const records = [
+		record('old', { content: 'chronicle chronicle old evidence', modifiedAt: 1_000 }),
+		record('fresh', { content: 'chronicle fresh evidence', modifiedAt: 3_000 }),
+		record('undated', { content: 'chronicle undated evidence' }),
+	];
+	const leaky: HybridRetriever = {
+		id: 'temporal-boundary-adversary',
+		channel: 'dense',
+		async retrieve() {
+			return records.map((item, index) => ({
+				recordId: item.id,
+				channel: 'dense' as const,
+				score: 100 - index,
+				reasons: ['adversarial'],
+			}));
+		},
+	};
+	const engine = new HybridQueryEngine(records, [new Bm25Retriever(records), leaky]);
+	const after = await engine.query({
+		text: 'chronicle',
+		scope: { mode: 'default' },
+		temporal: { after: 2_000 },
+	});
+	assert.deepEqual(after.evidence.map((item) => item.recordId), ['fresh']);
+	const before = await engine.query({
+		text: 'chronicle',
+		scope: { mode: 'default' },
+		temporal: { before: 2_000 },
+	});
+	assert.deepEqual(before.evidence.map((item) => item.recordId), ['old']);
+	const empty = await engine.query({
+		text: 'chronicle',
+		scope: { mode: 'default' },
+		temporal: { after: 4_000 },
+	});
+	assert.equal(empty.status, 'no_evidence');
+	assert.deepEqual(empty.evidence, []);
+	const boundedRecords = [
+		record('matching-old', { content: 'target-only-in-the-past', modifiedAt: 1_000 }),
+		record('irrelevant-fresh', { content: 'unrelated current material', modifiedAt: 3_000 }),
+	];
+	const irrelevantInRange = await new HybridQueryEngine(
+		boundedRecords,
+		[new Bm25Retriever(boundedRecords), new TemporalRetriever(boundedRecords)],
+	).query({
+		text: 'target-only-in-the-past',
+		scope: { mode: 'default' },
+		temporal: { after: 2_000 },
+	});
+	assert.equal(irrelevantInRange.status, 'no_evidence');
+	assert.deepEqual(irrelevantInRange.evidence, []);
+
+	const recencyOnly = await new HybridQueryEngine(
+		records,
+		[new TemporalRetriever(records)],
+	).query({
+		text: 'chronicle',
+		scope: { mode: 'default' },
+		temporal: { preferRecent: true },
+		now: 4_000,
+	});
+	assert.equal(recencyOnly.evidence[0]?.recordId, 'fresh');
+	assert.ok(recencyOnly.evidence.some((item) => item.recordId === 'old'));
 });
 
 test('empty, failed, and timed-out retrieval return explicit safe refusals', async () => {

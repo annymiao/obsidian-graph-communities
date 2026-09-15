@@ -86,6 +86,19 @@ export interface Bm25RetrieverContract extends HybridRetriever {
 	readonly channel: 'bm25';
 }
 
+export interface Bm25ArtifactEntry {
+	recordId: string;
+	versionId: string;
+	documentLength: number;
+	termFrequencies: ReadonlyArray<readonly [term: string, frequency: number]>;
+}
+
+/** Validated in-memory form of the persisted chunk-level lexical index. */
+export interface Bm25Artifact {
+	schemaVersion: 1;
+	entries: readonly Bm25ArtifactEntry[];
+}
+
 export interface DenseRetrieverContract extends HybridRetriever {
 	readonly channel: 'dense';
 }

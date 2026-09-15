@@ -122,6 +122,8 @@ export interface SecondBrainRuntimeOptions extends HybridEngineOptions {
 		sourceId: string,
 		generationId: string,
 		manifestSha256: string,
+		expectedGenerationId: string,
+		expectedManifestSha256: string,
 	) => Promise<void>;
 }
 
