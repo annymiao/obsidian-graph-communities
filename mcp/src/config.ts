@@ -1,5 +1,7 @@
+import { homedir } from 'node:os';
 import { realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { createSourceId } from './stableIds.js';
 import { ServerConfig } from './types.js';
 
 const DEFAULT_EXCLUDED_FOLDERS = ['.git', '.obsidian', '.trash', 'node_modules'];
@@ -38,10 +40,22 @@ export async function loadServerConfig(
 		readBoundedInteger(environment.OBSIDIAN_CHUNK_OVERLAP_TOKENS, 80, 0, 400),
 		Math.floor(chunkTokens / 3),
 	);
+	const sourceIdentity = environment.OBSIDIAN_SOURCE_IDENTITY?.trim() || vaultPath;
+	const persistenceEnabled = readBoolean(environment.OBSIDIAN_PERSIST_INDEX, true);
+	const artifactPath = persistenceEnabled
+		? await resolveArtifactPath(environment, sourceIdentity)
+		: null;
+	if (artifactPath && pathsOverlap(vaultPath, artifactPath)) {
+		throw new Error(
+			'Persistent index storage and OBSIDIAN_VAULT_PATH must not contain one another.',
+		);
+	}
 
 	return {
 		vaultPath,
 		vaultName: path.basename(vaultPath),
+		sourceIdentity,
+		artifactPath,
 		excludedFolders,
 		indexTtlMs: readBoundedInteger(
 			environment.OBSIDIAN_INDEX_TTL_MS,
@@ -76,6 +90,68 @@ export async function loadServerConfig(
 			4_000,
 		),
 	};
+}
+
+async function resolveArtifactPath(
+	environment: NodeJS.ProcessEnv,
+	sourceIdentity: string,
+): Promise<string> {
+	const configured = environment.OBSIDIAN_ARTIFACT_PATH?.trim();
+	if (configured) return canonicalizePotentialPath(path.resolve(configured));
+
+	let applicationDataRoot: string;
+	if (process.platform === 'darwin') {
+		applicationDataRoot = path.join(homedir(), 'Library', 'Application Support');
+	} else if (process.platform === 'win32') {
+		applicationDataRoot = environment.LOCALAPPDATA?.trim()
+			|| environment.APPDATA?.trim()
+			|| path.join(homedir(), 'AppData', 'Local');
+	} else {
+		applicationDataRoot = environment.XDG_DATA_HOME?.trim()
+			|| path.join(homedir(), '.local', 'share');
+	}
+
+	return canonicalizePotentialPath(path.join(
+		path.resolve(applicationDataRoot),
+		'Obsidian Knowledge Gateway',
+		'indexes',
+		createSourceId(sourceIdentity),
+	));
+}
+
+async function canonicalizePotentialPath(candidate: string): Promise<string> {
+	let existing = candidate;
+	const missingSegments: string[] = [];
+	for (;;) {
+		try {
+			const canonical = await realpath(existing);
+			return path.join(canonical, ...missingSegments.reverse());
+		} catch (error) {
+			if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') throw error;
+			const parent = path.dirname(existing);
+			if (parent === existing) throw error;
+			missingSegments.push(path.basename(existing));
+			existing = parent;
+		}
+	}
+}
+
+function isSameOrDescendant(root: string, candidate: string): boolean {
+	const relative = path.relative(root, candidate);
+	return relative === ''
+		|| (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+function pathsOverlap(first: string, second: string): boolean {
+	return isSameOrDescendant(first, second) || isSameOrDescendant(second, first);
+}
+
+function readBoolean(value: string | undefined, fallback: boolean): boolean {
+	if (!value?.trim()) return fallback;
+	const normalized = value.trim().toLocaleLowerCase();
+	if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+	if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+	throw new Error('OBSIDIAN_PERSIST_INDEX must be true or false.');
 }
 
 function readBoundedInteger(

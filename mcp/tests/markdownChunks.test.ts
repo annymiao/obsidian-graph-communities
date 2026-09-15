@@ -48,6 +48,62 @@ test('keeps long Chinese chunks inside the estimated token budget', () => {
 	}
 });
 
+test('gives chunks split from one long line distinct inclusive column ranges', () => {
+	const line = `${'alpha '.repeat(160)}columnbeacon ${'omega '.repeat(160)}`;
+	const chunks = chunkMarkdown([line], 0, [], 200, 20);
+
+	assert.ok(chunks.length > 2);
+	assert.equal(new Set(chunks.map((chunk) => chunk.startColumn)).size, chunks.length);
+	for (const chunk of chunks) {
+		assert.equal(chunk.startLine, 1);
+		assert.equal(chunk.endLine, 1);
+		assert.ok((chunk.startColumn ?? 0) >= 1);
+		assert.ok((chunk.endColumn ?? 0) >= (chunk.startColumn ?? 1));
+		assert.equal(
+			line.slice((chunk.startColumn ?? 1) - 1, chunk.endColumn),
+			chunk.content,
+		);
+	}
+});
+
+test('long-line overlap skips useless leading whitespace without duplicate spans', () => {
+	const line = `${' '.repeat(1_000)}${'alpha '.repeat(1_000)}`;
+	const chunks = chunkMarkdown([line], 0, [], 200, 80);
+	const spans = chunks.map((chunk) => `${chunk.startColumn}:${chunk.endColumn}`);
+
+	assert.ok(chunks.length > 2);
+	assert.ok(chunks.length < 50, `unexpected chunk amplification: ${chunks.length}`);
+	assert.equal(new Set(spans).size, chunks.length);
+	for (const chunk of chunks) {
+		assert.equal(
+			line.slice((chunk.startColumn ?? 1) - 1, chunk.endColumn),
+			chunk.content,
+		);
+	}
+});
+
+test('long-line overlap crosses internal and trailing whitespace without duplicate spans', () => {
+	const variants = [
+		`${'alpha '.repeat(100)}${' '.repeat(1_000)}`,
+		`${'alpha '.repeat(100)}${' '.repeat(1_000)}${'beta '.repeat(100)}`,
+	];
+	for (const line of variants) {
+		const chunks = chunkMarkdown([line], 0, [], 200, 80);
+		const spans = chunks.map((chunk) => `${chunk.startColumn}:${chunk.endColumn}`);
+		assert.ok(chunks.length < 20, `unexpected chunk amplification: ${chunks.length}`);
+		assert.equal(new Set(spans).size, chunks.length);
+		for (const chunk of chunks) {
+			assert.equal(
+				line.slice((chunk.startColumn ?? 1) - 1, chunk.endColumn),
+				chunk.content,
+			);
+		}
+		if (line.includes('beta')) {
+			assert.ok(chunks.some((chunk) => chunk.content.includes('beta')));
+		}
+	}
+});
+
 test('advances past oversized whitespace instead of looping forever', () => {
 	const chunks = chunkMarkdown(
 		[' '.repeat(4_000), '有意义的正文'],

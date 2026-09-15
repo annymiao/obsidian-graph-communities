@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.0 — 2026-09-15
+
+- Added opaque stable IDs for sources, documents, versions, spans, and chunks.
+- Added a local checksummed generation store with atomic publication and rollback support.
+- Added verified persistent retrieval snapshots and source-metadata invalidation without changing Vault files.
+- Added an inverted lexical candidate index and a synthetic first/cached/reopened retrieval benchmark.
+- Kept every derived artifact outside release files, the Vault, and Git by default.
+- Persistence now defaults on for the optional gateway; mode payloads can contain bounded full note text plus chunk copies, so they are documented as sensitive local data and can be disabled.
+
 ## 0.6.0 — 2026-09-10
 
 - Add the optional read-only Obsidian knowledge gateway under `mcp/` while keeping Vault content and generated indexes outside Git.

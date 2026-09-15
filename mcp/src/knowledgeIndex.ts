@@ -4,6 +4,7 @@ import type { Dirent, Stats } from 'node:fs';
 import { lstat, open, readdir, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { TextDecoder } from 'node:util';
+import { GenerationStore } from './generationStore.js';
 import { chunkMarkdown, MarkdownHeading } from './markdownChunks.js';
 import {
 	classifyRetrieval,
@@ -14,6 +15,20 @@ import {
 	RetrievalDecision,
 } from './retrievalPolicy.js';
 import { estimateTokens, truncateToTokenBudget } from './tokenBudget.js';
+import {
+	ChunkId,
+	createChunkId,
+	createDocumentId,
+	createSourceId,
+	createSpanId,
+	createVersionId,
+	DocumentId,
+	normalizeDocumentPath,
+	SourceId,
+	SpanId,
+	STABLE_ID_SCHEME_VERSION,
+	VersionId,
+} from './stableIds.js';
 import {
 	KnowledgeContext,
 	KnowledgeCorpus,
@@ -33,6 +48,9 @@ const GRAPH_RERANK_MAXIMUM = 0.12;
 const MINIMUM_LEXICAL_SCORE = 0.2;
 const QUARANTINE_PREFIX_CHARACTERS = 4_096;
 const READ_BUFFER_BYTES = 64 * 1_024;
+const SNAPSHOT_ARTIFACT_SCHEMA_VERSION = 2;
+const RETRIEVAL_PIPELINE_VERSION = 'v0.7-foundation-1';
+const MAXIMUM_BUILD_STABILITY_ATTEMPTS = 3;
 const POLICY_FRONTMATTER_KEYS = new Set([
 	'archived',
 	'corpus',
@@ -53,11 +71,23 @@ const STOP_WORDS = new Set([
 	'which', 'who', 'why', 'with',
 ]);
 
+const QUERY_FILLER_WORDS = new Set([
+	'about', 'document', 'documents', 'find', 'locate', 'lookup', 'note', 'notes', 'please',
+	'search', 'show', 'tell',
+]);
+
+const METADATA_QUERY_SHELL_WORDS = new Set([
+	'about', 'find', 'locate', 'lookup', 'please', 'show', 'tell',
+]);
+
 interface KnowledgeChunk {
-	id: string;
+	id: ChunkId;
+	spanId: SpanId;
 	heading: string | null;
 	startLine: number;
 	endLine: number;
+	startColumn?: number;
+	endColumn?: number;
 	content: string;
 	termFrequencies: Map<string, number>;
 	uniqueTokens: Set<string>;
@@ -65,6 +95,9 @@ interface KnowledgeChunk {
 }
 
 interface KnowledgeDocument {
+	sourceId: SourceId;
+	documentId: DocumentId;
+	versionId: VersionId;
 	path: string;
 	title: string;
 	aliases: string[];
@@ -77,6 +110,7 @@ interface KnowledgeDocument {
 	retrievalReason: string;
 	normalizedHash: string | null;
 	quarantineHash: string | null;
+	truncated: boolean;
 	chunks: KnowledgeChunk[];
 	fieldTokens: {
 		title: Set<string>;
@@ -110,6 +144,13 @@ interface FileListing {
 	scanErrorCount: number;
 }
 
+interface SourceStateEntry {
+	path: string;
+	mtimeMs: number;
+	ctimeMs: number;
+	size: number;
+}
+
 interface TextCandidate {
 	document: KnowledgeDocument;
 	chunk: KnowledgeChunk;
@@ -132,11 +173,15 @@ interface KnowledgeSnapshot {
 	adjacency: Map<string, Set<string>>;
 	incoming: Map<string, Set<string>>;
 	documentFrequency: Map<string, number>;
+	candidatePathsByTerm: Map<string, Set<string>>;
 	averageChunkLength: number;
 	searchableChunkCount: number;
 	linkCount: number;
 	stats: VaultStats;
 	builtAt: number;
+	validatedAt: number;
+	sourceState: SourceStateEntry[];
+	generationId: string | null;
 }
 
 interface ContextOptions extends SearchOptions {
@@ -167,29 +212,100 @@ interface BoundedFileRead {
 	size: number;
 }
 
+interface SerializedKnowledgeChunk {
+	id: string;
+	spanId: string;
+	heading: string | null;
+	startLine: number;
+	endLine: number;
+	startColumn: number | null;
+	endColumn: number | null;
+	content: string;
+	termFrequencies: Array<[string, number]>;
+	tokenCount: number;
+}
+
+interface SerializedKnowledgeDocument {
+	sourceId: string;
+	documentId: string;
+	versionId: string;
+	path: string;
+	title: string;
+	aliases: string[];
+	tags: string[];
+	headings: MarkdownHeading[];
+	content: string;
+	links: string[];
+	corpus: KnowledgeCorpus;
+	retrievalScope: RetrievalScope;
+	retrievalReason: string;
+	normalizedHash: string | null;
+	quarantineHash: string | null;
+	truncated: boolean;
+	chunks: SerializedKnowledgeChunk[];
+	fieldTokens: {
+		title: string[];
+		aliases: string[];
+		tags: string[];
+		headings: string[];
+		path: string[];
+	};
+}
+
+interface SnapshotArtifact {
+	schemaVersion: number;
+	pipelineVersion: string;
+	stableIdSchemeVersion: string;
+	sourceId: string;
+	configFingerprint: string;
+	mode: RetrievalMode;
+	builtAt: number;
+	sourceState: SourceStateEntry[];
+	stats: VaultStats;
+	documents: SerializedKnowledgeDocument[];
+}
+
+class ArtifactIsolationError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = 'ArtifactIsolationError';
+	}
+}
+
 export class KnowledgeIndex {
 	private readonly snapshots = new Map<RetrievalMode, KnowledgeSnapshot>();
 	private readonly buildPromises = new Map<RetrievalMode, Promise<KnowledgeSnapshot>>();
-	private readonly snapshotExpiryTimers = new Map<RetrievalMode, ReturnType<typeof setTimeout>>();
 	private readonly sourceCache = new Map<string, CachedSource>();
+	private readonly generationStores = new Map<RetrievalMode, Promise<GenerationStore>>();
+	private readonly sourceId: SourceId;
+	private readonly artifactFingerprint: string;
 	private canonicalVaultRootPromise: Promise<string> | null = null;
 
-	constructor(private readonly config: ServerConfig) {}
+	constructor(private readonly config: ServerConfig) {
+		this.sourceId = createSourceId(config.sourceIdentity ?? config.vaultPath);
+		this.artifactFingerprint = this.buildArtifactFingerprint();
+	}
 
 	async search(query: string, options: SearchOptions = {}): Promise<KnowledgeMatch[]> {
 		const queryText = query.trim();
-		const queryTerms = [...new Set(this.tokenize(queryText))];
+		const queryTerms = [...new Set(this.tokenizeQuery(queryText))];
 		if (queryTerms.length === 0) return [];
+		const rawQueryTerms = [...new Set(this.tokenize(queryText))];
+		const metadataQueryTerms = rawQueryTerms.filter((term) => {
+			return !METADATA_QUERY_SHELL_WORDS.has(term);
+		});
+		if (metadataQueryTerms.length === 0) metadataQueryTerms.push(...rawQueryTerms);
 
 		const mode = options.mode ?? 'default';
 		const snapshot = await this.getSnapshot(options.refresh === true, mode);
-		const candidates = [...snapshot.documents.values()]
-			.map((document) => this.scoreDocument(document, queryText, queryTerms, snapshot))
-			.filter((candidate): candidate is TextCandidate => candidate !== null)
-			.sort((first, second) => {
-				return second.lexicalScore - first.lexicalScore
-					|| first.document.path.localeCompare(second.document.path);
-			});
+		let candidates = this.buildTextCandidates(queryText, queryTerms, snapshot);
+		if (candidates.length === 0) {
+			const primaryTerms = new Set(queryTerms);
+			const fallbackTerms = metadataQueryTerms.filter((term) => !primaryTerms.has(term));
+			if (fallbackTerms.length > 0) {
+				candidates = this.buildMetadataFallbackCandidates(fallbackTerms, snapshot);
+			}
+		}
 		if (candidates.length === 0) return [];
 
 		const lexicalSeeds = candidates.slice(0, 3).map((candidate) => candidate.document.path);
@@ -205,6 +321,10 @@ export class KnowledgeIndex {
 				const combinedScore = candidate.lexicalScore
 					* (1 + GRAPH_RERANK_MAXIMUM * graphMatch.score);
 				return {
+					sourceId: candidate.document.sourceId,
+					documentId: candidate.document.documentId,
+					versionId: candidate.document.versionId,
+					spanId: candidate.chunk.spanId,
 					path: candidate.document.path,
 					title: candidate.document.title,
 					heading: candidate.chunk.heading,
@@ -217,6 +337,12 @@ export class KnowledgeIndex {
 					chunkId: candidate.chunk.id,
 					startLine: candidate.chunk.startLine,
 					endLine: candidate.chunk.endLine,
+					...(candidate.chunk.startColumn === undefined
+						? {}
+						: {
+							startColumn: candidate.chunk.startColumn,
+							endColumn: candidate.chunk.endColumn as number,
+						}),
 					corpus: candidate.document.corpus,
 					retrievalScope: candidate.document.retrievalScope,
 					lexicalScore: Number(candidate.lexicalScore.toFixed(4)),
@@ -276,14 +402,21 @@ export class KnowledgeIndex {
 			const relation = match.relationPath.length > 1
 				? match.relationPath.join(' → ')
 				: 'direct lexical match';
+			const sourceCoordinates = match.startColumn === undefined
+				? `lines ${match.startLine}-${match.endLine}`
+				: `line ${match.startLine}, columns ${match.startColumn}-${match.endColumn}`;
+			const location = match.heading
+				? `${match.heading} (${sourceCoordinates})`
+				: sourceCoordinates;
 			const header = [
 				`## Source ${index + 1}: ${match.title}`,
 				'',
 				`- Path: ${match.path}`,
+				`- Evidence ID: ${match.spanId}`,
 				`- Corpus: ${match.corpus}`,
 				`- Retrieval scope: ${match.retrievalScope}`,
 				`- Open: ${match.uri}`,
-				`- Located at: ${match.heading ?? `lines ${match.startLine}-${match.endLine}`}`,
+				`- Located at: ${location}`,
 				`- Match evidence: ${match.reasons.join('; ')}`,
 				`- Relation path: ${relation}`,
 				'',
@@ -339,7 +472,15 @@ export class KnowledgeIndex {
 		heading?: string,
 		maxCharacters = 20_000,
 		mode: RetrievalMode = 'default',
-	): Promise<{ path: string; title: string; content: string; uri: string }> {
+	): Promise<{
+		sourceId: SourceId;
+		documentId: DocumentId;
+		versionId: VersionId;
+		path: string;
+		title: string;
+		content: string;
+		uri: string;
+	}> {
 		const snapshot = await this.getSnapshot(false, mode);
 		const resolvedPath = this.resolveInputPath(snapshot, notePath);
 		if (!resolvedPath) throw new Error('Note was not found in the selected retrieval scope.');
@@ -363,6 +504,9 @@ export class KnowledgeIndex {
 		}
 
 		return {
+			sourceId: document.sourceId,
+			documentId: document.documentId,
+			versionId: document.versionId,
 			path: document.path,
 			title: document.title,
 			content: content.slice(0, maximum),
@@ -406,6 +550,9 @@ export class KnowledgeIndex {
 				const reasons = [distance === 1 ? 'directly linked' : 'connected through one note'];
 				if (sharedTags.length > 0) reasons.push(`shared tags: ${sharedTags.slice(0, 3).join(', ')}`);
 				return {
+					sourceId: candidate.sourceId,
+					documentId: candidate.documentId,
+					versionId: candidate.versionId,
 					path: candidate.path,
 					title: candidate.title,
 					distance,
@@ -422,8 +569,8 @@ export class KnowledgeIndex {
 			.slice(0, maximumResults);
 	}
 
-	async getStats(refresh = false): Promise<VaultStats> {
-		const snapshot = await this.getSnapshot(refresh, 'default');
+	async getStats(refresh = false, mode: RetrievalMode = 'default'): Promise<VaultStats> {
+		const snapshot = await this.getSnapshot(refresh, mode);
 		return snapshot.stats;
 	}
 
@@ -434,52 +581,457 @@ export class KnowledgeIndex {
 				try {
 					await activeBuild;
 				} catch {
-					// A fresh build below is the authoritative result for this refresh.
+					// The explicit refresh below is the authoritative retry.
 				}
-				return this.getSnapshot(true, mode);
 			}
 			this.snapshots.clear();
-			for (const timer of this.snapshotExpiryTimers.values()) clearTimeout(timer);
-			this.snapshotExpiryTimers.clear();
 		}
 		if (mode !== 'default') {
 			for (const cachedMode of this.snapshots.keys()) {
 				if (cachedMode !== 'default' && cachedMode !== mode) {
 					this.snapshots.delete(cachedMode);
-					this.clearSnapshotExpiry(cachedMode);
 				}
 			}
 		}
 		const cached = this.snapshots.get(mode);
-		if (cached && Date.now() - cached.builtAt < this.config.indexTtlMs) return cached;
 		const activeBuild = this.buildPromises.get(mode);
 		if (activeBuild) return activeBuild;
 
-		const promise = this.buildSnapshot(mode);
+		const promise = this.resolveSnapshot(mode, forceRefresh, cached);
 		this.buildPromises.set(mode, promise);
 		try {
 			const snapshot = await promise;
 			this.snapshots.set(mode, snapshot);
-			this.clearSnapshotExpiry(mode);
-			const snapshotBuildTime = snapshot.builtAt;
-			const expiry = setTimeout(() => {
-				if (this.snapshots.get(mode)?.builtAt === snapshotBuildTime) {
-					this.snapshots.delete(mode);
-				}
-				this.snapshotExpiryTimers.delete(mode);
-			}, this.config.indexTtlMs);
-			expiry.unref();
-			this.snapshotExpiryTimers.set(mode, expiry);
 			return snapshot;
 		} finally {
 			if (this.buildPromises.get(mode) === promise) this.buildPromises.delete(mode);
 		}
 	}
 
-	private clearSnapshotExpiry(mode: RetrievalMode): void {
-		const timer = this.snapshotExpiryTimers.get(mode);
-		if (timer) clearTimeout(timer);
-		this.snapshotExpiryTimers.delete(mode);
+	private async resolveSnapshot(
+		mode: RetrievalMode,
+		forceRefresh: boolean,
+		cached: KnowledgeSnapshot | undefined,
+	): Promise<KnowledgeSnapshot> {
+		if (!forceRefresh && cached && await this.sourceStateMatches(cached.sourceState)) {
+			cached.validatedAt = Date.now();
+			return cached;
+		}
+		if (!forceRefresh && !cached) {
+			const persisted = await this.loadPersistedSnapshot(mode);
+			if (persisted) return persisted;
+		}
+		for (let attempt = 1; attempt <= MAXIMUM_BUILD_STABILITY_ATTEMPTS; attempt += 1) {
+			const rebuilt = await this.buildSnapshot(mode);
+			if (await this.sourceStateMatches(rebuilt.sourceState)) {
+				rebuilt.validatedAt = Date.now();
+				return this.publishSnapshot(rebuilt);
+			}
+		}
+		throw new Error(
+			'Vault changed repeatedly while the retrieval index was being built; refusing an unstable snapshot.',
+		);
+	}
+
+	private async generationStore(mode: RetrievalMode): Promise<GenerationStore | null> {
+		const root = this.config.artifactPath;
+		if (!root) return null;
+		const existing = this.generationStores.get(mode);
+		if (existing) return existing;
+		const promise = this.prepareGenerationStore(root, path.join(root, 'retrieval', mode));
+		this.generationStores.set(mode, promise);
+		try {
+			return await promise;
+		} catch (error) {
+			if (this.generationStores.get(mode) === promise) this.generationStores.delete(mode);
+			throw error;
+		}
+	}
+
+	private async prepareGenerationStore(
+		artifactPath: string,
+		storePath: string,
+	): Promise<GenerationStore> {
+		const [vaultRoot, candidateArtifactRoot, candidateStoreRoot] = await Promise.all([
+			this.getCanonicalVaultRoot(),
+			canonicalizePotentialPath(artifactPath),
+			canonicalizePotentialPath(storePath),
+		]);
+		assertArtifactIsolation(vaultRoot, candidateArtifactRoot);
+		assertArtifactIsolation(vaultRoot, candidateStoreRoot);
+		assertPathContained(candidateArtifactRoot, candidateStoreRoot);
+
+		const store = new GenerationStore(storePath);
+		await store.initialize();
+		const [actualArtifactRoot, actualRoot] = await Promise.all([
+			realpath(artifactPath),
+			realpath(store.configuredRootPath),
+		]);
+		assertArtifactIsolation(vaultRoot, actualRoot);
+		assertPathContained(actualArtifactRoot, actualRoot);
+		return store;
+	}
+
+	private async loadPersistedSnapshot(mode: RetrievalMode): Promise<KnowledgeSnapshot | null> {
+		let store: GenerationStore | null;
+		try {
+			store = await this.generationStore(mode);
+		} catch (error) {
+			if (error instanceof ArtifactIsolationError) throw error;
+			return null;
+		}
+		if (!store) return null;
+
+		let stored;
+		try {
+			stored = await store.readCurrent();
+		} catch {
+			return null;
+		}
+		if (!stored) return null;
+
+		let artifact: SnapshotArtifact;
+		try {
+			artifact = this.decodeSnapshotArtifact(stored.payload);
+		} catch {
+			return null;
+		}
+		if (
+			artifact.schemaVersion !== SNAPSHOT_ARTIFACT_SCHEMA_VERSION
+			|| artifact.pipelineVersion !== RETRIEVAL_PIPELINE_VERSION
+			|| artifact.stableIdSchemeVersion !== STABLE_ID_SCHEME_VERSION
+			|| artifact.sourceId !== this.sourceId
+			|| artifact.configFingerprint !== this.artifactFingerprint
+			|| artifact.mode !== mode
+		) {
+			return null;
+		}
+
+		let snapshot: KnowledgeSnapshot;
+		try {
+			snapshot = this.deserializeSnapshot(artifact, stored.manifest.generationId);
+		} catch {
+			return null;
+		}
+		if (!await this.sourceStateMatches(snapshot.sourceState)) return null;
+		snapshot.validatedAt = Date.now();
+		snapshot.stats.indexGenerationId = stored.manifest.generationId;
+		snapshot.stats.indexOrigin = 'persistent';
+		snapshot.stats.persistenceStatus = 'loaded';
+		return snapshot;
+	}
+
+	private async publishSnapshot(snapshot: KnowledgeSnapshot): Promise<KnowledgeSnapshot> {
+		let store: GenerationStore | null;
+		try {
+			store = await this.generationStore(snapshot.mode);
+		} catch (error) {
+			if (error instanceof ArtifactIsolationError) throw error;
+			snapshot.stats.persistenceStatus = 'degraded';
+			return snapshot;
+		}
+		if (!store) {
+			snapshot.stats.persistenceStatus = 'disabled';
+			return snapshot;
+		}
+		const payload = this.encodeSnapshotArtifact(snapshot);
+		let repaired = false;
+		try {
+			let manifest;
+			try {
+				manifest = await store.publish(payload, { retainPrevious: false });
+			} catch {
+				if (!await store.quarantineCorruptState()) throw new Error('Generation publication failed.');
+				manifest = await store.publish(payload, { retainPrevious: false });
+				repaired = true;
+			}
+			snapshot.generationId = manifest.generationId;
+			snapshot.stats.indexGenerationId = manifest.generationId;
+			snapshot.stats.persistenceStatus = repaired ? 'repaired' : 'published';
+			try {
+				await store.pruneUnreferenced();
+			} catch {
+				// The newly published CURRENT remains valid, but storage maintenance needs attention.
+				snapshot.stats.persistenceStatus = 'degraded';
+			}
+		} catch {
+			snapshot.stats.persistenceStatus = 'degraded';
+		}
+		return snapshot;
+	}
+
+	private encodeSnapshotArtifact(snapshot: KnowledgeSnapshot): Buffer {
+		const artifact: SnapshotArtifact = {
+			schemaVersion: SNAPSHOT_ARTIFACT_SCHEMA_VERSION,
+			pipelineVersion: RETRIEVAL_PIPELINE_VERSION,
+			stableIdSchemeVersion: STABLE_ID_SCHEME_VERSION,
+			sourceId: this.sourceId,
+			configFingerprint: this.artifactFingerprint,
+			mode: snapshot.mode,
+			builtAt: snapshot.builtAt,
+			sourceState: snapshot.sourceState,
+			stats: snapshot.stats,
+			documents: [...snapshot.documents.values()]
+				.sort((first, second) => first.path.localeCompare(second.path))
+				.map((document) => this.serializeDocument(document)),
+		};
+		return Buffer.from(JSON.stringify(artifact), 'utf8');
+	}
+
+	private serializeDocument(document: KnowledgeDocument): SerializedKnowledgeDocument {
+		return {
+			sourceId: document.sourceId,
+			documentId: document.documentId,
+			versionId: document.versionId,
+			path: document.path,
+			title: document.title,
+			aliases: document.aliases,
+			tags: document.tags,
+			headings: document.headings,
+			content: document.content,
+			links: document.links,
+			corpus: document.corpus,
+			retrievalScope: document.retrievalScope,
+			retrievalReason: document.retrievalReason,
+			normalizedHash: document.normalizedHash,
+			quarantineHash: document.quarantineHash,
+			truncated: document.truncated,
+				chunks: document.chunks.map((chunk) => ({
+					id: chunk.id,
+					spanId: chunk.spanId,
+					heading: chunk.heading,
+					startLine: chunk.startLine,
+					endLine: chunk.endLine,
+					startColumn: chunk.startColumn ?? null,
+					endColumn: chunk.endColumn ?? null,
+				content: chunk.content,
+				termFrequencies: [...chunk.termFrequencies.entries()]
+					.sort(([first], [second]) => first.localeCompare(second)),
+				tokenCount: chunk.tokenCount,
+			})),
+			fieldTokens: {
+				title: [...document.fieldTokens.title].sort(),
+				aliases: [...document.fieldTokens.aliases].sort(),
+				tags: [...document.fieldTokens.tags].sort(),
+				headings: [...document.fieldTokens.headings].sort(),
+				path: [...document.fieldTokens.path].sort(),
+			},
+		};
+	}
+
+	private decodeSnapshotArtifact(payload: unknown): SnapshotArtifact {
+		if (!Buffer.isBuffer(payload)) {
+			throw new Error('Retrieval snapshot payload must be an opaque Buffer.');
+		}
+		let value: unknown;
+		try {
+			value = JSON.parse(payload.toString('utf8')) as unknown;
+		} catch (error) {
+			throw new Error('Retrieval snapshot payload is not valid JSON.', { cause: error });
+		}
+		assertSnapshotArtifactShape(value);
+		return value;
+	}
+
+	private deserializeSnapshot(
+		artifact: SnapshotArtifact,
+		generationId: string,
+	): KnowledgeSnapshot {
+		const sourceState = artifact.sourceState.map((entry) => this.deserializeSourceState(entry));
+		const sourceVersions = new Map(sourceState.map((entry) => [entry.path, entry]));
+		const documents = new Map<string, KnowledgeDocument>();
+		for (const serialized of artifact.documents) {
+			const document = this.deserializeDocument(serialized, sourceVersions);
+			if (!modeAllows(document.retrievalScope, artifact.mode)) {
+				throw new Error('Snapshot document violates its retrieval-mode boundary.');
+			}
+			if (documents.has(document.path)) throw new Error('Snapshot contains duplicate document paths.');
+			documents.set(document.path, document);
+		}
+		const graph = this.buildGraph(documents);
+		const bm25 = this.buildBm25Stats(documents);
+		const stats = deserializeVaultStats(artifact.stats, this.sourceId);
+		return {
+			mode: artifact.mode,
+			documents,
+			pathLookup: graph.pathLookup,
+			basenameLookup: graph.basenameLookup,
+			adjacency: graph.adjacency,
+			incoming: graph.incoming,
+			documentFrequency: bm25.documentFrequency,
+			candidatePathsByTerm: this.buildCandidateIndex(documents),
+			averageChunkLength: bm25.averageChunkLength,
+			searchableChunkCount: bm25.searchableChunkCount,
+			linkCount: graph.linkCount,
+			stats: {
+				...stats,
+				vaultName: this.config.vaultName,
+				linkCount: graph.linkCount,
+				indexedNoteCount: documents.size,
+				noteCount: documents.size,
+				chunkCount: [...documents.values()]
+					.reduce((total, document) => total + document.chunks.length, 0),
+				indexGenerationId: generationId,
+				indexOrigin: 'persistent',
+				persistenceStatus: 'loaded',
+			},
+			builtAt: artifact.builtAt,
+			validatedAt: Date.now(),
+			sourceState,
+			generationId,
+		};
+	}
+
+	private deserializeSourceState(entry: SourceStateEntry): SourceStateEntry {
+		if (
+			typeof entry.path !== 'string'
+			|| normalizeDocumentPath(entry.path) !== entry.path
+			|| !isSafeNonNegativeNumber(entry.mtimeMs)
+			|| !isSafeNonNegativeNumber(entry.ctimeMs)
+			|| !Number.isSafeInteger(entry.size)
+			|| entry.size < 0
+		) {
+			throw new Error('Snapshot contains an invalid source-state entry.');
+		}
+		return { ...entry };
+	}
+
+	private deserializeDocument(
+		serialized: SerializedKnowledgeDocument,
+		sourceVersions: Map<string, SourceStateEntry>,
+	): KnowledgeDocument {
+		assertSerializedDocumentShape(serialized);
+		if (normalizeDocumentPath(serialized.path) !== serialized.path) {
+			throw new Error('Snapshot document path is not canonical.');
+		}
+		const sourceVersion = sourceVersions.get(serialized.path);
+		if (!sourceVersion) throw new Error('Snapshot document has no matching source state.');
+		const documentId = createDocumentId(this.sourceId, serialized.path);
+		const versionId = createVersionId(
+			documentId,
+			serialized.truncated
+				? { version: `filesystem:${sourceVersion.size}:${sourceVersion.mtimeMs}:${sourceVersion.ctimeMs}` }
+				: { content: serialized.content },
+		);
+		if (
+			serialized.sourceId !== this.sourceId
+			|| serialized.documentId !== documentId
+			|| serialized.versionId !== versionId
+		) {
+			throw new Error('Snapshot stable document identity is inconsistent.');
+		}
+		const chunks = serialized.chunks.map((chunk): KnowledgeChunk => {
+			const spanId = createSpanId(
+				versionId,
+				chunk.startColumn === null
+					? { startLine: chunk.startLine, endLine: chunk.endLine }
+					: {
+						startLine: chunk.startLine,
+						endLine: chunk.endLine,
+						startColumn: chunk.startColumn,
+						endColumn: chunk.endColumn as number,
+					},
+			);
+			const chunkId = createChunkId(spanId, chunk.content);
+			if (chunk.spanId !== spanId || chunk.id !== chunkId) {
+				throw new Error('Snapshot stable chunk identity is inconsistent.');
+			}
+			const termFrequencies = new Map(chunk.termFrequencies);
+			if (termFrequencies.size !== chunk.termFrequencies.length) {
+				throw new Error('Snapshot chunk contains duplicate term frequencies.');
+			}
+				return {
+					id: chunkId,
+					spanId,
+					heading: chunk.heading,
+					startLine: chunk.startLine,
+					endLine: chunk.endLine,
+					...(chunk.startColumn === null
+						? {}
+						: {
+							startColumn: chunk.startColumn,
+							endColumn: chunk.endColumn as number,
+						}),
+				content: chunk.content,
+				termFrequencies,
+				uniqueTokens: new Set(termFrequencies.keys()),
+				tokenCount: chunk.tokenCount,
+			};
+		});
+		return {
+			sourceId: this.sourceId,
+			documentId,
+			versionId,
+			path: serialized.path,
+			title: serialized.title,
+			aliases: [...serialized.aliases],
+			tags: [...serialized.tags],
+			headings: serialized.headings.map((heading) => ({ ...heading })),
+			content: serialized.content,
+			links: [...serialized.links],
+			corpus: serialized.corpus,
+			retrievalScope: serialized.retrievalScope,
+			retrievalReason: serialized.retrievalReason,
+			normalizedHash: serialized.normalizedHash,
+			quarantineHash: serialized.quarantineHash,
+			truncated: serialized.truncated,
+			chunks,
+			fieldTokens: {
+				title: new Set(serialized.fieldTokens.title),
+				aliases: new Set(serialized.fieldTokens.aliases),
+				tags: new Set(serialized.fieldTokens.tags),
+				headings: new Set(serialized.fieldTokens.headings),
+				path: new Set(serialized.fieldTokens.path),
+			},
+		};
+	}
+
+	private async sourceStateMatches(expected: SourceStateEntry[]): Promise<boolean> {
+		const listing = await this.findMarkdownFiles();
+		if (
+			listing.scanErrorCount > 0
+			|| listing.maxFilesReached
+			|| listing.discoveredCount !== expected.length
+			|| listing.files.length !== expected.length
+		) {
+			return false;
+		}
+		const expectedByPath = new Map(expected.map((entry) => [entry.path, entry]));
+		if (expectedByPath.size !== expected.length) return false;
+		for (let offset = 0; offset < listing.files.length; offset += INDEX_BATCH_SIZE) {
+			const batch = listing.files.slice(offset, offset + INDEX_BATCH_SIZE);
+			const matches = await Promise.all(batch.map(async (file) => {
+				const expectedEntry = expectedByPath.get(file.relativePath);
+				if (!expectedEntry) return false;
+				try {
+					const fileInfo = await lstat(file.absolutePath);
+					return fileInfo.isFile()
+						&& !fileInfo.isSymbolicLink()
+						&& fileInfo.mtimeMs === expectedEntry.mtimeMs
+						&& fileInfo.ctimeMs === expectedEntry.ctimeMs
+						&& fileInfo.size === expectedEntry.size;
+				} catch {
+					return false;
+				}
+			}));
+			if (matches.some((matchesSource) => !matchesSource)) return false;
+		}
+		return true;
+	}
+
+	private buildArtifactFingerprint(): string {
+		const material = JSON.stringify({
+			schemaVersion: SNAPSHOT_ARTIFACT_SCHEMA_VERSION,
+			pipelineVersion: RETRIEVAL_PIPELINE_VERSION,
+			stableIdSchemeVersion: STABLE_ID_SCHEME_VERSION,
+			sourceId: this.sourceId,
+			excludedFolders: [...this.config.excludedFolders].sort(),
+			maxFileCharacters: this.config.maxFileCharacters,
+			maxFiles: this.config.maxFiles,
+			chunkTokens: this.config.chunkTokens,
+			chunkOverlapTokens: this.config.chunkOverlapTokens,
+		});
+		return createHash('sha256').update(material).digest('hex');
 	}
 
 	private async buildSnapshot(mode: RetrievalMode): Promise<KnowledgeSnapshot> {
@@ -506,6 +1058,17 @@ export class KnowledgeIndex {
 				'One or more Markdown files could not be read safely; refusing a partial retrieval index.',
 			);
 		}
+		const completeSources = loaded as CachedSource[];
+		const sourceState = listing.files.map((file, index): SourceStateEntry => {
+			const source = completeSources[index];
+			if (!source) throw new Error('Source state was incomplete after a successful Vault read.');
+			return {
+				path: file.relativePath,
+				mtimeMs: source.mtimeMs,
+				ctimeMs: source.ctimeMs,
+				size: source.size,
+			};
+		});
 
 		for (const cachedPath of this.sourceCache.keys()) {
 			if (!livePaths.has(cachedPath)) this.sourceCache.delete(cachedPath);
@@ -594,12 +1157,17 @@ export class KnowledgeIndex {
 		);
 		const graph = this.buildGraph(documents);
 		const bm25 = this.buildBm25Stats(documents);
+		const candidatePathsByTerm = this.buildCandidateIndex(documents);
 		const builtAt = Date.now();
 		const chunkCount = [...documents.values()]
 			.reduce((total, document) => total + document.chunks.length, 0);
 		const defaultNoteCount = [...documents.values()]
 			.filter((document) => document.retrievalScope === 'default').length;
 		const stats: VaultStats = {
+			sourceId: this.sourceId,
+			indexGenerationId: null,
+			indexOrigin: 'rebuilt',
+			persistenceStatus: this.config.artifactPath ? 'degraded' : 'disabled',
 			vaultName: this.config.vaultName,
 			noteCount: documents.size,
 			linkCount: graph.linkCount,
@@ -626,11 +1194,15 @@ export class KnowledgeIndex {
 			adjacency: graph.adjacency,
 			incoming: graph.incoming,
 			documentFrequency: bm25.documentFrequency,
+			candidatePathsByTerm,
 			averageChunkLength: bm25.averageChunkLength,
 			searchableChunkCount: bm25.searchableChunkCount,
 			linkCount: graph.linkCount,
 			stats,
 			builtAt,
+			validatedAt: builtAt,
+			sourceState,
+			generationId: null,
 		};
 	}
 
@@ -654,6 +1226,7 @@ export class KnowledgeIndex {
 				bounded.content,
 				bounded.truncated,
 				mode,
+				`${bounded.size}:${bounded.mtimeMs}:${bounded.ctimeMs}`,
 			);
 			const source: CachedSource = {
 				mtimeMs: bounded.mtimeMs,
@@ -665,9 +1238,8 @@ export class KnowledgeIndex {
 				truncated: bounded.truncated,
 				document: analyzed.document,
 			};
-			// Expanded project/reference/history snapshots may be large. Their documents
-			// live for the snapshot TTL, but only the small default corpus is retained in
-			// the metadata cache after that snapshot is replaced.
+			// Expanded project/reference/history snapshots may be large. Only the small
+			// default corpus is retained in the metadata cache after such a snapshot is replaced.
 			this.sourceCache.set(file.relativePath, {
 				...source,
 				document: analyzed.document?.retrievalScope === 'default'
@@ -787,8 +1359,14 @@ export class KnowledgeIndex {
 		content: string,
 		truncated: boolean,
 		mode: RetrievalMode,
+		filesystemVersion: string,
 	): AnalyzedSource {
 		const normalizedPath = this.normalizePath(documentPath);
+		const documentId = createDocumentId(this.sourceId, normalizedPath);
+		const versionId = createVersionId(
+			documentId,
+			truncated ? { version: `filesystem:${filesystemVersion}` } : { content },
+		);
 		const lines = content.split(/\r?\n/u);
 		const frontmatter = this.parseFrontmatter(lines);
 		const headings = this.extractHeadings(lines, frontmatter.bodyStartLine);
@@ -797,9 +1375,7 @@ export class KnowledgeIndex {
 			?? firstHeading
 			?? this.removeMarkdownExtension(path.posix.basename(normalizedPath));
 		const body = lines.slice(frontmatter.bodyStartLine).join('\n');
-		const inlineTags = [...body.matchAll(/(?:^|\s)#([\p{L}\p{N}_/-]+)/gu)]
-			.map((match) => match[1])
-			.filter((tag): tag is string => Boolean(tag));
+		const inlineTags = this.extractInlineTags(lines, frontmatter.bodyStartLine);
 		const tags = [...new Set([...frontmatter.tags, ...inlineTags])];
 		const decision = classifyRetrieval({
 			path: normalizedPath,
@@ -821,13 +1397,31 @@ export class KnowledgeIndex {
 			this.config.chunkTokens,
 			this.config.chunkOverlapTokens,
 		);
-		const chunks: KnowledgeChunk[] = chunkDrafts.map((draft, index) => {
+		const chunks: KnowledgeChunk[] = chunkDrafts.map((draft) => {
 			const tokens = this.tokenize(draft.content);
+			const spanId = createSpanId(
+				versionId,
+				draft.startColumn === undefined
+					? { startLine: draft.startLine, endLine: draft.endLine }
+					: {
+						startLine: draft.startLine,
+						endLine: draft.endLine,
+						startColumn: draft.startColumn,
+						endColumn: draft.endColumn as number,
+					},
+			);
 			return {
-				id: `${normalizedPath}::${index + 1}`,
+				id: createChunkId(spanId, draft.content),
+				spanId,
 				heading: draft.heading,
 				startLine: draft.startLine,
 				endLine: draft.endLine,
+				...(draft.startColumn === undefined
+					? {}
+					: {
+						startColumn: draft.startColumn,
+						endColumn: draft.endColumn as number,
+					}),
 				content: draft.content,
 				termFrequencies: this.countTerms(tokens),
 				uniqueTokens: new Set(tokens),
@@ -837,8 +1431,13 @@ export class KnowledgeIndex {
 		if (chunks.length === 0 && body.trim()) {
 			const fallback = truncateToTokenBudget(body.trim(), this.config.chunkTokens);
 			const tokens = this.tokenize(fallback);
+			const spanId = createSpanId(versionId, {
+				startLine: frontmatter.bodyStartLine + 1,
+				endLine: Math.max(frontmatter.bodyStartLine + 1, lines.length),
+			});
 			chunks.push({
-				id: `${normalizedPath}::1`,
+				id: createChunkId(spanId, fallback),
+				spanId,
 				heading: null,
 				startLine: frontmatter.bodyStartLine + 1,
 				endLine: lines.length,
@@ -854,6 +1453,9 @@ export class KnowledgeIndex {
 			normalizedHash,
 			quarantineHash,
 			document: {
+				sourceId: this.sourceId,
+				documentId,
+				versionId,
 				path: normalizedPath,
 				title,
 				aliases: frontmatter.aliases,
@@ -866,6 +1468,7 @@ export class KnowledgeIndex {
 				retrievalReason: decision.reason,
 				normalizedHash,
 				quarantineHash,
+				truncated,
 				chunks,
 				fieldTokens: {
 					title: new Set(this.tokenize(title)),
@@ -975,18 +1578,147 @@ export class KnowledgeIndex {
 		};
 	}
 
+	private buildCandidateIndex(
+		documents: Map<string, KnowledgeDocument>,
+	): Map<string, Set<string>> {
+		const candidatePathsByTerm = new Map<string, Set<string>>();
+		for (const document of documents.values()) {
+			const documentTerms = new Set<string>([
+				...document.fieldTokens.title,
+				...document.fieldTokens.aliases,
+				...document.fieldTokens.tags,
+				...document.fieldTokens.headings,
+				...document.fieldTokens.path,
+			]);
+			for (const chunk of document.chunks) {
+				for (const term of chunk.uniqueTokens) documentTerms.add(term);
+			}
+			for (const term of documentTerms) {
+				const paths = candidatePathsByTerm.get(term) ?? new Set<string>();
+				paths.add(document.path);
+				candidatePathsByTerm.set(term, paths);
+			}
+		}
+		return candidatePathsByTerm;
+	}
+
+	private buildTextCandidates(
+		queryText: string,
+		queryTerms: string[],
+		snapshot: KnowledgeSnapshot,
+	): TextCandidate[] {
+		const rawTerms = this.tokenize(queryText);
+		const scoringQueryText = rawTerms.length === queryTerms.length
+			&& rawTerms.every((term, index) => term === queryTerms[index])
+			? queryText
+			: queryTerms.join(' ');
+		const candidateTermMatches = new Map<string, number>();
+		for (const term of queryTerms) {
+			for (const documentPath of snapshot.candidatePathsByTerm.get(term) ?? []) {
+				candidateTermMatches.set(
+					documentPath,
+					(candidateTermMatches.get(documentPath) ?? 0) + 1,
+				);
+			}
+		}
+		const requiredTerms = Math.min(2, queryTerms.length);
+		const selectiveDocumentFrequency = Math.max(
+			4,
+			Math.ceil(snapshot.documents.size * 0.02),
+		);
+		const selectiveTerms = new Set(queryTerms.filter((term) => {
+			const frequency = snapshot.candidatePathsByTerm.get(term)?.size ?? 0;
+			return frequency > 0 && frequency <= selectiveDocumentFrequency;
+		}));
+
+		return [...candidateTermMatches]
+			.map(([documentPath, matches]) => ({
+				document: snapshot.documents.get(documentPath),
+				matches,
+			}))
+			.filter((candidate): candidate is { document: KnowledgeDocument; matches: number } => {
+				return candidate.document !== undefined;
+			})
+			.filter(({ document, matches }) => {
+				const strongMetadata = queryTerms.some((term) => {
+					return document.fieldTokens.title.has(term)
+						|| document.fieldTokens.aliases.has(term)
+						|| document.fieldTokens.tags.has(term);
+				});
+				return matches >= requiredTerms
+					|| strongMetadata
+					|| [...selectiveTerms].some((term) => {
+						return snapshot.candidatePathsByTerm.get(term)?.has(document.path) === true;
+					});
+			})
+			.map(({ document }) => {
+				return this.scoreDocument(
+					document,
+					scoringQueryText,
+					queryTerms,
+					queryTerms,
+					selectiveTerms,
+					snapshot,
+				);
+			})
+			.filter((candidate): candidate is TextCandidate => candidate !== null)
+			.sort((first, second) => {
+				return second.lexicalScore - first.lexicalScore
+					|| first.document.path.localeCompare(second.document.path);
+			});
+	}
+
+	private buildMetadataFallbackCandidates(
+		fallbackTerms: string[],
+		snapshot: KnowledgeSnapshot,
+	): TextCandidate[] {
+		const candidatePaths = new Set<string>();
+		for (const term of fallbackTerms) {
+			for (const documentPath of snapshot.candidatePathsByTerm.get(term) ?? []) {
+				candidatePaths.add(documentPath);
+			}
+		}
+
+		return [...candidatePaths]
+			.map((documentPath) => snapshot.documents.get(documentPath))
+			.filter((document): document is KnowledgeDocument => document !== undefined)
+			.filter((document) => fallbackTerms.some((term) => {
+				return document.fieldTokens.title.has(term)
+					|| document.fieldTokens.aliases.has(term)
+					|| document.fieldTokens.tags.has(term);
+			}))
+			.map((document) => {
+				return this.scoreDocument(
+					document,
+					fallbackTerms.join(' '),
+					fallbackTerms,
+					fallbackTerms,
+					new Set<string>(),
+					snapshot,
+				);
+			})
+			.filter((candidate): candidate is TextCandidate => candidate !== null)
+			.sort((first, second) => {
+				return second.lexicalScore - first.lexicalScore
+					|| first.document.path.localeCompare(second.document.path);
+			});
+	}
+
 	private scoreDocument(
 		document: KnowledgeDocument,
 		queryText: string,
 		queryTerms: string[],
+		metadataQueryTerms: string[],
+		selectiveTerms: Set<string>,
 		snapshot: KnowledgeSnapshot,
 	): TextCandidate | null {
 		const querySet = new Set(queryTerms);
-		const titleMatches = this.intersection(querySet, document.fieldTokens.title);
-		const aliasMatches = this.intersection(querySet, document.fieldTokens.aliases);
-		const tagMatches = this.intersection(querySet, document.fieldTokens.tags);
-		const headingMatches = this.intersection(querySet, document.fieldTokens.headings);
-		const pathMatches = this.intersection(querySet, document.fieldTokens.path);
+		const metadataQuerySet = new Set(metadataQueryTerms);
+		const titleMatches = this.intersection(metadataQuerySet, document.fieldTokens.title);
+		const aliasMatches = this.intersection(metadataQuerySet, document.fieldTokens.aliases);
+		const tagMatches = this.intersection(metadataQuerySet, document.fieldTokens.tags);
+		const headingMatches = this.intersection(metadataQuerySet, document.fieldTokens.headings);
+		const pathMatches = this.intersection(metadataQuerySet, document.fieldTokens.path);
 		const metadataTerms = new Set([
 			...titleMatches,
 			...aliasMatches,
@@ -1013,8 +1745,18 @@ export class KnowledgeIndex {
 			const exactBody = normalizedQuery.length >= 2
 				&& this.containsExactPhrase(chunk.content, normalizedQuery);
 			const requiredTerms = Math.min(2, queryTerms.length);
-			const strongMetadata = exactMetadata || metadataTerms.size >= requiredTerms;
-			if (allMatched.size < requiredTerms && !exactBody && !strongMetadata) continue;
+			const strongMetadata = exactMetadata
+				|| titleMatches.length > 0
+				|| aliasMatches.length > 0
+				|| tagMatches.length > 0
+				|| metadataTerms.size >= requiredTerms;
+			const selectiveMatch = [...allMatched].some((term) => selectiveTerms.has(term));
+			if (
+				allMatched.size < requiredTerms
+				&& !exactBody
+				&& !strongMetadata
+				&& !selectiveMatch
+			) continue;
 
 			let bm25 = 0;
 			for (const term of queryTerms) {
@@ -1038,6 +1780,8 @@ export class KnowledgeIndex {
 			if (titleMatches.length > 0) reasons.push(`title: ${titleMatches.slice(0, 3).join(', ')}`);
 			if (aliasMatches.length > 0) reasons.push(`alias: ${aliasMatches.slice(0, 3).join(', ')}`);
 			if (tagMatches.length > 0) reasons.push(`tag: ${tagMatches.slice(0, 3).join(', ')}`);
+			if (headingMatches.length > 0) reasons.push(`heading: ${headingMatches.slice(0, 3).join(', ')}`);
+			if (pathMatches.length > 0) reasons.push(`path: ${pathMatches.slice(0, 3).join(', ')}`);
 			if (bodyTerms.length > 0) reasons.push(`chunk: ${bodyTerms.slice(0, 4).join(', ')}`);
 			const candidate: TextCandidate = {
 				document,
@@ -1348,6 +2092,38 @@ export class KnowledgeIndex {
 		return headings;
 	}
 
+	private extractInlineTags(lines: string[], bodyStartLine: number): string[] {
+		const tags: string[] = [];
+		let fence: { marker: '`' | '~'; length: number } | null = null;
+		for (let lineNumber = bodyStartLine; lineNumber < lines.length; lineNumber += 1) {
+			const line = lines[lineNumber] ?? '';
+			const fenceMatch = /^ {0,3}(`{3,}|~{3,})(.*)$/u.exec(line);
+			if (fence) {
+				if (fenceMatch?.[1]) {
+					const run = fenceMatch[1];
+					if (
+						run[0] === fence.marker
+						&& run.length >= fence.length
+						&& (fenceMatch[2] ?? '').trim().length === 0
+					) fence = null;
+				}
+				continue;
+			}
+			if (fenceMatch?.[1]) {
+				const marker = fenceMatch[1][0];
+				if (marker === '`' || marker === '~') {
+					fence = { marker, length: fenceMatch[1].length };
+				}
+				continue;
+			}
+			if (/^ {0,3}#{1,6}(?:[\t ]+|$)/u.test(line)) continue;
+			for (const match of line.matchAll(/(?:^|\s)#([\p{L}\p{N}_/-]+)/gu)) {
+				if (match[1]) tags.push(match[1]);
+			}
+		}
+		return [...new Set(tags)];
+	}
+
 	private extractLinks(content: string): string[] {
 		const links: string[] = [];
 		for (const match of content.matchAll(/!?\[\[([^\]]+)\]\]/gu)) {
@@ -1426,6 +2202,16 @@ export class KnowledgeIndex {
 			}
 		}
 		return tokens;
+	}
+
+	private tokenizeQuery(value: string): string[] {
+		const tokens = this.tokenize(value);
+		const withoutCourtesy = tokens.filter((token) => token !== 'please');
+		const withoutConversationalShell = withoutCourtesy.filter((token) => {
+			return !QUERY_FILLER_WORDS.has(token);
+		});
+		if (withoutConversationalShell.length > 0) return withoutConversationalShell;
+		return withoutCourtesy.length > 0 ? withoutCourtesy : tokens;
 	}
 
 	private countTerms(tokens: string[]): Map<string, number> {
@@ -1516,7 +2302,11 @@ export class KnowledgeIndex {
 	}
 
 	private normalizePath(value: string): string {
-		return value.replace(/\\/gu, '/').replace(/^\.\//u, '').replace(/\/{2,}/gu, '/');
+		return value
+			.replace(/\\/gu, '/')
+			.replace(/^\.\//u, '')
+			.replace(/\/{2,}/gu, '/')
+			.normalize('NFC');
 	}
 
 	private removeMarkdownExtension(value: string): string {
@@ -1542,4 +2332,278 @@ export class KnowledgeIndex {
 		const note = this.removeMarkdownExtension(notePath);
 		return `obsidian://open?vault=${encodeURIComponent(this.config.vaultName)}&file=${encodeURIComponent(note)}`;
 	}
+}
+
+async function canonicalizePotentialPath(candidate: string): Promise<string> {
+	let existing = path.resolve(candidate);
+	const missingSegments: string[] = [];
+	for (;;) {
+		try {
+			const canonical = await realpath(existing);
+			return path.join(canonical, ...missingSegments.reverse());
+		} catch (error) {
+			if (!isNodeError(error, 'ENOENT')) throw error;
+			const parent = path.dirname(existing);
+			if (parent === existing) throw error;
+			missingSegments.push(path.basename(existing));
+			existing = parent;
+		}
+	}
+}
+
+function assertArtifactIsolation(vaultRoot: string, artifactRoot: string): void {
+	if (pathsOverlap(vaultRoot, artifactRoot)) {
+		throw new ArtifactIsolationError(
+			'Persistent index storage and the Vault must not contain one another.',
+		);
+	}
+}
+
+function assertPathContained(root: string, candidate: string): void {
+	if (!isSameOrDescendant(root, candidate)) {
+		throw new ArtifactIsolationError(
+			'Persistent index storage must remain inside the configured artifact root.',
+		);
+	}
+}
+
+function pathsOverlap(first: string, second: string): boolean {
+	return isSameOrDescendant(first, second) || isSameOrDescendant(second, first);
+}
+
+function isSameOrDescendant(root: string, candidate: string): boolean {
+	const relative = path.relative(root, candidate);
+	return relative === ''
+		|| (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {
+	return error instanceof Error && 'code' in error && error.code === code;
+}
+
+function assertSnapshotArtifactShape(value: unknown): asserts value is SnapshotArtifact {
+	if (!isPlainRecord(value)) throw new Error('Retrieval snapshot must be an object.');
+	if (
+		typeof value.schemaVersion !== 'number'
+		|| typeof value.pipelineVersion !== 'string'
+		|| typeof value.stableIdSchemeVersion !== 'string'
+		|| typeof value.sourceId !== 'string'
+		|| typeof value.configFingerprint !== 'string'
+		|| !isRetrievalMode(value.mode)
+		|| !isSafeNonNegativeNumber(value.builtAt)
+		|| !Array.isArray(value.sourceState)
+		|| !Array.isArray(value.documents)
+		|| !isPlainRecord(value.stats)
+	) {
+		throw new Error('Retrieval snapshot header is invalid.');
+	}
+	if (!value.sourceState.every((entry) => isPlainRecord(entry))) {
+		throw new Error('Retrieval snapshot source state is invalid.');
+	}
+	if (!value.documents.every((document) => isPlainRecord(document))) {
+		throw new Error('Retrieval snapshot documents are invalid.');
+	}
+}
+
+function assertSerializedDocumentShape(
+	document: SerializedKnowledgeDocument,
+): void {
+	const stringFields: Array<keyof SerializedKnowledgeDocument> = [
+		'sourceId',
+		'documentId',
+		'versionId',
+		'path',
+		'title',
+		'content',
+		'retrievalReason',
+	];
+	if (stringFields.some((field) => typeof document[field] !== 'string')) {
+		throw new Error('Snapshot document has an invalid string field.');
+	}
+	if (
+		!isStringArray(document.aliases)
+		|| !isStringArray(document.tags)
+		|| !isStringArray(document.links)
+		|| !isKnowledgeCorpus(document.corpus)
+		|| !isRetrievalScope(document.retrievalScope)
+		|| !isNullableSha256(document.normalizedHash)
+		|| !isNullableSha256(document.quarantineHash)
+		|| typeof document.truncated !== 'boolean'
+		|| !Array.isArray(document.headings)
+		|| !Array.isArray(document.chunks)
+		|| !isPlainRecord(document.fieldTokens)
+	) {
+		throw new Error('Snapshot document schema is invalid.');
+	}
+	for (const heading of document.headings) {
+		if (
+			!isPlainRecord(heading)
+			|| typeof heading.text !== 'string'
+			|| !Number.isSafeInteger(heading.level)
+			|| heading.level < 1
+			|| heading.level > 6
+			|| !Number.isSafeInteger(heading.line)
+			|| heading.line < 0
+		) {
+			throw new Error('Snapshot document heading is invalid.');
+		}
+	}
+	for (const chunk of document.chunks) {
+		if (!isPlainRecord(chunk)) {
+			throw new Error('Snapshot document chunk is invalid.');
+		}
+		const validStartColumn = chunk.startColumn === null
+			|| (Number.isSafeInteger(chunk.startColumn) && chunk.startColumn >= 1);
+		const validEndColumn = chunk.endColumn === null
+			|| (Number.isSafeInteger(chunk.endColumn) && chunk.endColumn >= 1);
+		if (
+			typeof chunk.id !== 'string'
+			|| typeof chunk.spanId !== 'string'
+			|| (chunk.heading !== null && typeof chunk.heading !== 'string')
+			|| !Number.isSafeInteger(chunk.startLine)
+			|| chunk.startLine < 1
+			|| !Number.isSafeInteger(chunk.endLine)
+			|| chunk.endLine < chunk.startLine
+			|| !validStartColumn
+			|| !validEndColumn
+			|| (chunk.startColumn === null) !== (chunk.endColumn === null)
+			|| (
+				chunk.startColumn !== null
+				&& chunk.endColumn !== null
+				&& chunk.startLine === chunk.endLine
+				&& chunk.endColumn < chunk.startColumn
+			)
+			|| typeof chunk.content !== 'string'
+			|| chunk.content.length === 0
+			|| !Number.isSafeInteger(chunk.tokenCount)
+			|| chunk.tokenCount < 1
+			|| !Array.isArray(chunk.termFrequencies)
+		) {
+			throw new Error('Snapshot document chunk is invalid.');
+		}
+		for (const pair of chunk.termFrequencies) {
+			if (
+				!Array.isArray(pair)
+				|| pair.length !== 2
+				|| typeof pair[0] !== 'string'
+				|| pair[0].length === 0
+				|| !Number.isSafeInteger(pair[1])
+				|| pair[1] < 1
+			) {
+				throw new Error('Snapshot term frequency is invalid.');
+			}
+		}
+	}
+	for (const field of ['title', 'aliases', 'tags', 'headings', 'path'] as const) {
+		if (!isStringArray(document.fieldTokens[field])) {
+			throw new Error('Snapshot field-token index is invalid.');
+		}
+	}
+}
+
+function deserializeVaultStats(value: unknown, sourceId: SourceId): VaultStats {
+	if (!isPlainRecord(value)) throw new Error('Snapshot statistics are invalid.');
+	const integerFields = [
+		'noteCount',
+		'linkCount',
+		'discoveredNoteCount',
+		'indexedNoteCount',
+		'defaultNoteCount',
+		'chunkCount',
+		'excludedNoteCount',
+		'duplicateNoteCount',
+		'truncatedNoteCount',
+		'unreadableNoteCount',
+	] as const;
+	if (
+		value.sourceId !== sourceId
+		|| (value.indexGenerationId !== null && typeof value.indexGenerationId !== 'string')
+		|| (value.indexOrigin !== 'rebuilt' && value.indexOrigin !== 'persistent')
+		|| !['disabled', 'loaded', 'published', 'repaired', 'degraded']
+			.includes(String(value.persistenceStatus))
+		|| typeof value.vaultName !== 'string'
+		|| typeof value.lastIndexedAt !== 'string'
+		|| !Number.isFinite(Date.parse(value.lastIndexedAt))
+		|| typeof value.maxFilesReached !== 'boolean'
+		|| integerFields.some((field) => !isNonNegativeSafeInteger(value[field]))
+		|| !isCountRecord(value.countsByCorpus, [
+			'core', 'project', 'reference', 'history', 'control', 'generated',
+		])
+		|| !isCountRecord(value.countsByRetrievalScope, [
+			'default', 'project', 'reference', 'history', 'never',
+		])
+		|| !isCountRecord(value.excludedByReason)
+	) {
+		throw new Error('Snapshot statistics schema is invalid.');
+	}
+	return {
+		sourceId,
+		indexGenerationId: value.indexGenerationId as string | null,
+		indexOrigin: value.indexOrigin as VaultStats['indexOrigin'],
+		persistenceStatus: value.persistenceStatus as VaultStats['persistenceStatus'],
+		vaultName: value.vaultName,
+		noteCount: value.noteCount as number,
+		linkCount: value.linkCount as number,
+		lastIndexedAt: value.lastIndexedAt,
+		discoveredNoteCount: value.discoveredNoteCount as number,
+		indexedNoteCount: value.indexedNoteCount as number,
+		defaultNoteCount: value.defaultNoteCount as number,
+		chunkCount: value.chunkCount as number,
+		excludedNoteCount: value.excludedNoteCount as number,
+		duplicateNoteCount: value.duplicateNoteCount as number,
+		truncatedNoteCount: value.truncatedNoteCount as number,
+		unreadableNoteCount: value.unreadableNoteCount as number,
+		maxFilesReached: value.maxFilesReached,
+		countsByCorpus: { ...(value.countsByCorpus as Record<KnowledgeCorpus, number>) },
+		countsByRetrievalScope: {
+			...(value.countsByRetrievalScope as Record<RetrievalScope, number>),
+		},
+		excludedByReason: { ...(value.excludedByReason as Record<string, number>) },
+	};
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+	return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
+function isSafeNonNegativeNumber(value: unknown): value is number {
+	return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+	return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isNullableSha256(value: unknown): value is string | null {
+	return value === null || (typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value));
+}
+
+function isKnowledgeCorpus(value: unknown): value is KnowledgeCorpus {
+	return ['core', 'project', 'reference', 'history', 'control', 'generated'].includes(String(value));
+}
+
+function isRetrievalScope(value: unknown): value is RetrievalScope {
+	return ['default', 'project', 'reference', 'history', 'never'].includes(String(value));
+}
+
+function isRetrievalMode(value: unknown): value is RetrievalMode {
+	return ['default', 'project', 'reference', 'history'].includes(String(value));
+}
+
+function isCountRecord(value: unknown, exactKeys?: string[]): value is Record<string, number> {
+	if (!isPlainRecord(value)) return false;
+	if (exactKeys) {
+		const keys = Object.keys(value).sort();
+		if (
+			keys.length !== exactKeys.length
+			|| keys.some((key, index) => key !== [...exactKeys].sort()[index])
+		) {
+			return false;
+		}
+	}
+	return Object.values(value).every(isNonNegativeSafeInteger);
 }

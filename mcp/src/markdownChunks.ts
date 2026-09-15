@@ -12,6 +12,10 @@ export interface MarkdownChunkDraft {
 	heading: string | null;
 	startLine: number;
 	endLine: number;
+	/** One-based, inclusive UTF-16 column for a chunk split within one physical line. */
+	startColumn?: number;
+	/** One-based, inclusive UTF-16 column for a chunk split within one physical line. */
+	endColumn?: number;
 	content: string;
 }
 
@@ -195,6 +199,7 @@ function splitLongLine(
 ): MarkdownChunkDraft[] {
 	const chunks: MarkdownChunkDraft[] = [];
 	let offset = 0;
+	let lastEmittedEndOffset = 0;
 	while (offset < line.length) {
 		const tail = line.slice(offset);
 		const window = truncateToTokenBudget(tail, maximumTokens);
@@ -209,21 +214,42 @@ function splitLongLine(
 			continue;
 		}
 
+		const leadingWhitespace = window.length - window.trimStart().length;
+		const trailingWhitespace = window.length - window.trimEnd().length;
 		const content = window.trim();
-		if (content) {
+		const contentStartOffset = offset + leadingWhitespace;
+		const contentEndOffset = offset + window.length - trailingWhitespace;
+		const extendsVisibleCoverage = contentEndOffset > lastEmittedEndOffset;
+		if (content && extendsVisibleCoverage) {
 			chunks.push({
 				heading,
 				startLine: lineIndex + 1,
 				endLine: lineIndex + 1,
+				startColumn: contentStartOffset + 1,
+				endColumn: contentEndOffset,
 				content,
 			});
+			lastEmittedEndOffset = contentEndOffset;
 		}
 		if (window.length >= tail.length) break;
+		if (content && !extendsVisibleCoverage) {
+			const requestedAdvance = Math.max(1, lastEmittedEndOffset - offset);
+			offset += safeCharacterAdvance(tail, requestedAdvance);
+			continue;
+		}
 
 		let advance = window.length;
 		if (overlapTokens > 0) {
-			const nonOverlapBudget = Math.max(1, estimateTokens(window) - overlapTokens);
-			advance = truncateToTokenBudget(window, nonOverlapBudget).length;
+			// Leading whitespace is not useful overlap. Include it in the cursor
+			// advance before calculating progress through visible content; otherwise a
+			// whitespace-heavy prefix can emit the same trimmed span many times.
+			const visibleWindow = window.slice(leadingWhitespace);
+			const nonOverlapBudget = Math.max(
+				1,
+				estimateTokens(visibleWindow) - overlapTokens,
+			);
+			advance = leadingWhitespace
+				+ truncateToTokenBudget(visibleWindow, nonOverlapBudget).length;
 		}
 		offset += safeCharacterAdvance(tail, Math.max(1, advance));
 	}

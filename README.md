@@ -10,8 +10,9 @@ remaining link is drawn from its source color to its target color.
 
 The repository also contains an optional read-only knowledge gateway under [`mcp/`](mcp/). It gives AI clients a
 small, source-linked evidence pack instead of exposing the whole Vault: stable core knowledge is the default, while
-project, reference, and history corpora require an explicit retrieval mode. The Obsidian plugin remains fully local
-and independent of this gateway.
+project, reference, and history corpora require an explicit retrieval mode. Version 0.7 adds opaque evidence IDs and
+verified local index generations so an unchanged Vault can be reopened without reparsing every note. The Obsidian
+plugin remains fully local and independent of this gateway.
 
 ## What it does
 
@@ -132,6 +133,7 @@ The model is fully local and rule-based. It reads complete Markdown notes but do
 - Settings are stored using Obsidian's standard plugin data mechanism.
 - Disabling or unloading the plugin restores the theme's normal node colors.
 - GitHub releases contain only `main.js`, `manifest.json`, and `styles.css`; no vault notes, generated indexes, local paths, or plugin settings are packaged.
+- The optional gateway stores rebuildable derived generations in the user's OS application-data directory by default, never inside the repository or Vault. A mode payload contains each eligible note's bounded Markdown content plus a second chunked copy, and metadata for every discovered Markdown path; treat it as sensitive local data.
 - See [SECURITY.md](SECURITY.md) for the release boundary and vulnerability reporting process.
 
 ## Compatibility note

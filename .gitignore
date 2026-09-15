@@ -21,6 +21,8 @@ scratch/
 outputs/
 knowledge-index.json
 index-manifest.json
+.knowledge-artifacts/
+knowledge-artifacts/
 
 # Personal knowledge and attachment boundaries
 vault/

@@ -1,8 +1,21 @@
+import type {
+	ChunkId,
+	DocumentId,
+	SourceId,
+	SpanId,
+	VersionId,
+} from './stableIds.js';
+
 export interface ServerConfig {
 	vaultPath: string;
 	vaultName: string;
+	/** Stable logical connector identity. Defaults to the canonical Vault path. */
+	sourceIdentity?: string;
+	/** Local derived-artifact root. Null/undefined keeps the index memory-only. */
+	artifactPath?: string | null;
 	excludedFolders: Set<string>;
-	indexTtlMs: number;
+	/** @deprecated v0.7 validates source metadata before every snapshot reuse. */
+	indexTtlMs?: number;
 	maxFileCharacters: number;
 	maxFiles: number;
 	chunkTokens: number;
@@ -32,6 +45,10 @@ export interface SearchOptions {
 }
 
 export interface KnowledgeMatch {
+	sourceId: SourceId;
+	documentId: DocumentId;
+	versionId: VersionId;
+	spanId: SpanId;
 	path: string;
 	title: string;
 	heading: string | null;
@@ -41,9 +58,11 @@ export interface KnowledgeMatch {
 	snippet: string;
 	excerpt: string;
 	uri: string;
-	chunkId: string;
+	chunkId: ChunkId;
 	startLine: number;
 	endLine: number;
+	startColumn?: number;
+	endColumn?: number;
 	corpus: KnowledgeCorpus;
 	retrievalScope: RetrievalScope;
 	lexicalScore: number;
@@ -60,6 +79,9 @@ export interface KnowledgeContext {
 }
 
 export interface RelatedNote {
+	sourceId: SourceId;
+	documentId: DocumentId;
+	versionId: VersionId;
 	path: string;
 	title: string;
 	distance: number;
@@ -70,6 +92,10 @@ export interface RelatedNote {
 }
 
 export interface VaultStats {
+	sourceId: SourceId;
+	indexGenerationId: string | null;
+	indexOrigin: 'rebuilt' | 'persistent';
+	persistenceStatus: 'disabled' | 'loaded' | 'published' | 'repaired' | 'degraded';
 	vaultName: string;
 	noteCount: number;
 	linkCount: number;

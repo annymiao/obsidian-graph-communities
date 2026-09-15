@@ -165,6 +165,114 @@ test('a conclusion after 120k characters is searchable as a bounded chunk', asyn
 	assert.equal(stats.truncatedNoteCount, 0);
 });
 
+test('long-line evidence has distinct stable spans with precise columns', async (t) => {
+	const root = await syntheticVault(t);
+	const line = [
+		'prefix '.repeat(260),
+		'firstcolumnbeacon84721 ',
+		'middle '.repeat(260),
+		'secondcolumnbeacon84721',
+	].join('');
+	await writeSynthetic(root, '30-Shared-Knowledge/long-line.md', frontmatter(
+		{ type: 'knowledge-card', status: 'active' },
+		`# Long line\n${line}`,
+	));
+
+	const knowledge = new KnowledgeIndex(configFor(root));
+	const first = (await knowledge.search('firstcolumnbeacon84721'))[0];
+	const second = (await knowledge.search('secondcolumnbeacon84721'))[0];
+	assert.ok(first);
+	assert.ok(second);
+	assert.equal(first.startLine, second.startLine);
+	assert.notEqual(first.spanId, second.spanId);
+	assert.notEqual(first.chunkId, second.chunkId);
+	assert.ok((first.startColumn ?? 0) <= line.indexOf('firstcolumnbeacon84721') + 1);
+	assert.ok((first.endColumn ?? 0) >= line.indexOf('firstcolumnbeacon84721') + 22);
+	assert.ok((second.startColumn ?? 0) <= line.indexOf('secondcolumnbeacon84721') + 1);
+	assert.ok((second.endColumn ?? 0) >= line.indexOf('secondcolumnbeacon84721') + 23);
+});
+
+test('conversational query shells preserve a selective evidence term', async (t) => {
+	const root = await syntheticVault(t);
+	await writeSynthetic(root, '30-Shared-Knowledge/codex.md', frontmatter(
+		{ type: 'knowledge-card', status: 'active' },
+		'# Codex retrieval\nCodex connects a bounded evidence pack.',
+	));
+
+	const knowledge = new KnowledgeIndex(configFor(root));
+	const direct = await knowledge.search('Codex');
+	assert.equal(direct[0]?.path, '30-Shared-Knowledge/codex.md');
+	for (const query of ['please find Codex', 'notes about Codex', 'search Codex']) {
+		const matches = await knowledge.search(query);
+		assert.equal(matches[0]?.path, '30-Shared-Knowledge/codex.md', query);
+		assert.equal(matches[0]?.lexicalScore, direct[0]?.lexicalScore, query);
+		assert.equal(matches[0]?.confidence, direct[0]?.confidence, query);
+	}
+});
+
+test('a common title token survives the candidate gate with an unmatched query term', async (t) => {
+	const root = await syntheticVault(t);
+	await Promise.all(Array.from({ length: 10 }, (_, index) => {
+		return writeSynthetic(root, `30-Shared-Knowledge/meeting-${index}.md`, frontmatter(
+			{ type: 'knowledge-card', status: 'active' },
+			`# Meeting ${index}\nDocumented decision ${index}.`,
+		));
+	}));
+
+	const knowledge = new KnowledgeIndex(configFor(root));
+	const matches = await knowledge.search('meeting unmatchedconcept');
+	assert.ok(matches.length > 0);
+	assert.ok(matches.every((match) => match.title.startsWith('Meeting')));
+});
+
+test('query-shell filtering does not erase a legitimate Search title', async (t) => {
+	const root = await syntheticVault(t);
+	await writeSynthetic(root, '30-Shared-Knowledge/search.md', frontmatter(
+		{ type: 'knowledge-card', status: 'active' },
+		'# Search\nA reusable explanation of local information retrieval.',
+	));
+
+	const knowledge = new KnowledgeIndex(configFor(root));
+	for (const query of ['search unmatchedconcept', 'please search unmatchedconcept']) {
+		const matches = await knowledge.search(query);
+		assert.equal(matches[0]?.path, '30-Shared-Knowledge/search.md', query);
+	}
+});
+
+test('an immediate sensitivity change invalidates an in-memory snapshot', async (t) => {
+	const root = await syntheticVault(t);
+	const notePath = '30-Shared-Knowledge/sensitivity-change.md';
+	await writeSynthetic(root, notePath, frontmatter(
+		{ type: 'knowledge-card', status: 'active' },
+		'# Initially eligible\nimmediatesensitivitybeacon84721 is temporarily searchable.',
+	));
+	const knowledge = new KnowledgeIndex(configFor(root, { indexTtlMs: 60_000 }));
+	assert.ok((await knowledge.search('immediatesensitivitybeacon84721')).length > 0);
+
+	await writeSynthetic(root, notePath, frontmatter(
+		{ sensitivity: 'private' },
+		'# Now private\nimmediatesensitivitybeacon84721 must not survive a cache window.',
+	));
+	assert.deepEqual(await knowledge.search('immediatesensitivitybeacon84721'), []);
+});
+
+test('a newly added restricted duplicate invalidates an otherwise unchanged match', async (t) => {
+	const root = await syntheticVault(t);
+	const body = '# Candidate\nnewrestrictedcopybeacon84721 must be quarantined as a group.';
+	await writeSynthetic(root, '30-Shared-Knowledge/candidate.md', frontmatter(
+		{ type: 'knowledge-card', status: 'active' },
+		body,
+	));
+	const knowledge = new KnowledgeIndex(configFor(root, { indexTtlMs: 60_000 }));
+	assert.ok((await knowledge.search('newrestrictedcopybeacon84721')).length > 0);
+
+	await writeSynthetic(root, 'Private/restricted-copy.md', frontmatter(
+		{ sensitivity: 'private' },
+		body,
+	));
+	assert.deepEqual(await knowledge.search('newrestrictedcopybeacon84721'), []);
+});
+
 test('normalized duplicate bodies select core over a history copy', async (t) => {
 	const root = await syntheticVault(t);
 	const body = '# Shared synthetic evidence\n\ndedupbeacon84721 has one reusable conclusion.\n';

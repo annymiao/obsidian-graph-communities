@@ -25,6 +25,7 @@ test('stdio server exposes a private MCP App review flow without a review bypass
 			...process.env,
 			OBSIDIAN_VAULT_PATH: vaultPath,
 			OBSIDIAN_INDEX_TTL_MS: '60000',
+			OBSIDIAN_PERSIST_INDEX: 'false',
 		},
 	});
 	const client = new Client(

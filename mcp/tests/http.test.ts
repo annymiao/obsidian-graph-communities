@@ -21,6 +21,7 @@ beforeEach(async () => {
 	const config = await loadServerConfig({
 		OBSIDIAN_VAULT_PATH: vaultPath,
 		OBSIDIAN_INDEX_TTL_MS: '60000',
+		OBSIDIAN_PERSIST_INDEX: 'false',
 	});
 	const options: GatewayOptions = {
 		host: '127.0.0.1',
@@ -54,7 +55,7 @@ test('REST gateway requires an API key and exposes read-only knowledge', async (
 	assert.equal(health.status, 200);
 	const healthBody = await health.json() as { mode: string; version: string };
 	assert.equal(healthBody.mode, 'read-only');
-	assert.equal(healthBody.version, '0.6.0');
+	assert.equal(healthBody.version, '0.7.0');
 
 	const unauthorized = await fetch(`${baseUrl}/v1/search`, {
 		method: 'POST',

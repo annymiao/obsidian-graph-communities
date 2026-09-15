@@ -1,6 +1,6 @@
 {
   "name": "obsidian-graph-communities",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Primary-topic knowledge graph coloring, semantic exclusions, and endpoint-gradient links for Obsidian.",
   "private": false,
   "license": "MIT",

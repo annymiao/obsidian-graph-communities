@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.0 — 2026-09-15
+
+- Added deterministic opaque `source → document → version → span → chunk` identities.
+- Added immutable local generations published through `staging → READY → CURRENT` with checksums and writer serialization. The generic store supports previous-generation recovery; retrieval snapshots use current-only retention for safer withdrawal.
+- Reuse now verifies artifact schema, pipeline/config fingerprint, stable identities, and current file metadata before serving a stored generation.
+- Added an inverted lexical candidate index so unchanged queries score only documents containing query terms.
+- Added a privacy-safe synthetic benchmark for first build, cached queries, and reopened-generation reuse.
+- Retrieval generations use current-only retention after successful pruning, query reuse never mutates visibility pointers, and corrupt state is replaced only after a stable authoritative rebuild.
+- Documented that persistence defaults on, stores bounded complete eligible Markdown plus chunk copies, and degrades rather than claiming durability when a 512 MiB payload or cleanup cannot be completed.
+
 ## 0.6.0 — 2026-09-10
 
 - Replaced flat whole-Vault retrieval with four explicit modes: core-only `default`, or core plus `project`, `reference`, or `history`.
