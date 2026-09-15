@@ -1,13 +1,13 @@
 interface:
-  display_name: "Obsidian 知识"
-  short_description: "审核后再把个人 Obsidian 知识发送给 Codex"
-  default_prompt: "Use $obsidian-knowledge to open the mandatory editable local review window, then collect the approved one-time transmission; no Vault content may reach Codex before I confirm it."
+  display_name: "Obsidian 第二大脑"
+  short_description: "查询本地编译证据；写入和撤销始终由你确认"
+  default_prompt: "Use $obsidian-knowledge to query my permission-filtered compiled evidence. Follow the configured private review for query transmission, and never write or roll back a source unless I explicitly request it and approve the exact local review."
 
 dependencies:
   tools:
     - type: "mcp"
       value: "obsidian_knowledge"
-      description: "Read-only personal Obsidian knowledge server"
+      description: "Compiled local Obsidian evidence with private human-approved controlled writes"
       transport: "stdio"
 
 policy:

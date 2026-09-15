@@ -7,10 +7,14 @@ Graph Communities 会把 Obsidian 的黑白关系图谱变成一张按知识点�
 次要主题只保留为关系、搜索和悬停上下文，不混入节点颜色，也不参与主题占比。
 结构性文件不进入可见图谱；剩余连线按源节点颜色到目标节点颜色绘制。
 
-仓库的 [`mcp/`](mcp/) 目录还包含一个可选的只读知识网关。它不会把整个 Vault 交给 AI，而是返回带来源、
-受 token 预算约束的小型证据包：默认只检索稳定核心知识；项目、参考资料和历史语料必须显式选择。
-0.7 版增加不透明证据 ID 和经过校验的本地索引代次；Vault 未变化时，重启后无需重新解析全部正文。
-Obsidian 图谱插件仍然完全本地运行，也不依赖这个网关。
+仓库的 [`mcp/`](mcp/) 目录还包含一个可选的编译式第二大脑服务。1.3 将可恢复的慢速离线编译与有
+协作式截止预算的在线查询分开，持久化带校验和的 Catalog、Lexical、Vector、Temporal、Hierarchy 和
+Derived 产物，并原子固定完整多来源 generation 集合。服务器权限先于 BM25 / Dense / Metadata /
+Temporal / Hierarchy 并发编排召回，最终只返回带来源的小型 Evidence Pack 或安全拒答。普通目录可使用
+受控写入协议，但 MCP 写工具默认不注册，HTTP 始终只读。Obsidian 图谱插件本身仍完全本地、只读，
+也不依赖这个服务。
+
+5,000 ms 设置是查询的协作式预算与安全发布边界，不是对任意语料规模已证明的 wall-clock SLO；当前基线仍含 O(N) 和 O(ND) 阶段。每来源 `CURRENT` 是物理指针，原子 runtime catalog 才是验证后的多来源在线快照。外部 offline CLI 发布 catalog 后需重启或重建在线 bootstrap，因为 `runtime.reload()` 不会重读该 catalog；受控写则可在同一进程验证并热加载新 pin。精确完成度与验收边界见[五层实现核对表](docs/FIVE_LAYER_IMPLEMENTATION_AUDIT_1.3.md)。
 
 ## 主要功能
 
@@ -131,7 +135,12 @@ pnpm test
 - 插件设置使用 Obsidian 标准插件数据机制保存。
 - 禁用或卸载插件后，会恢复主题原本的节点颜色。
 - GitHub Release 只包含 `main.js`、`manifest.json` 和 `styles.css`，不会打包 Vault 笔记、生成索引、本地路径或插件设置。
-- 可选知识网关默认把可重建的派生代次放在系统应用数据目录，不放入仓库或 Vault。每个模式的载荷会保存可检索笔记在单文件上限内的 Markdown 正文及一份分块副本，并记录所有已发现 Markdown 的相对路径元数据；应按敏感本地数据保护。
+- 可选服务把可重建 generation 与写入运行状态放在来源目录和 Git 之外；其中可能含完整分块、路径、向量、Diff、审计与回滚材料，必须按敏感本地数据保护。
+- 它可编译 1–16 个显式配置的本地 Markdown 根目录，不移动原始文件；原子 runtime catalog 固定每个来源的 generation 与 manifest Hash，避免单个来源提前更新形成混合快照。
+- 查询只能收窄服务器创建的 Source / Project / Mode / Path Principal；五路召回使用同一可见集合，再融合、去重并抽取压缩。
+- MCP 写入默认关闭。启用 `trusted-mcp-app` 表示部署方保证 app-only 工具和私有元数据不会交给模型；这是宿主信任边界，不是密码学用户在场证明。对外声明的可写能力只到 source 层，每个目标 path 在 prepare 时都会再鉴权。HTTP 没有写路由。
+- 升级旧的本地第二大脑产物时，因为持久化 `lexical.chunkIndex` 现为必需项，必须在来源介质在线时运行一次离线编译。Runtime catalog schema v3 不做 v2 原位迁移：先停止使用该 catalog 的全部 publisher 和在线进程，把旧私有 catalog 移到隔离备份（或改用新 catalog 路径），运行一次离线编译，再重启在线服务；兼容 generation 可以复用，Markdown 原文不会修改。Watch 仍读取并 Hash eligible Markdown 以证明未变，但匹配时复用同一 generation，也不重写逻辑上相同的 runtime catalog。MCP `after_content` 上限为 262,144 UTF-8 bytes，完整私有审核文档上限为 1,000,000 bytes。
+- 模型客户端可以提出关联与校对候选；核心服务负责版本绑定、Diff、风险、人工审核和安全写入，但不内置建议生成器。来源/项目权限、冲突真伪、最终长期内容、删除和撤销仍由受信配置或人工决定。
 - 发布边界和漏洞报告方式见 [SECURITY.md](SECURITY.md)。
 
 ## 兼容性说明
@@ -153,7 +162,7 @@ npm run verify
 node scripts/vault-smoke.mjs /path/to/vault
 ```
 
-第二大脑的分阶段路线见 [`docs/SECOND-BRAIN-ROADMAP.md`](docs/SECOND-BRAIN-ROADMAP.md)：先解决检索边界，再处理分散来源，最后建设跨模型记忆。
+第二大脑 1.3 的五层完成状态、先后/平行关系与剩余私有验收见 [`docs/SECOND-BRAIN-ROADMAP.md`](docs/SECOND-BRAIN-ROADMAP.md) 和 [`docs/FIVE_LAYER_IMPLEMENTATION_AUDIT_1.3.md`](docs/FIVE_LAYER_IMPLEMENTATION_AUDIT_1.3.md)。
 
 ## 许可证
 

@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.3.0 — 2026-09-15
+
+- Added the complete compiled second-brain framework while preserving the existing Graph Communities plugin identity and its local, read-only behavior.
+- Added a resumable offline compiler with bounded source scanning, strict Markdown/frontmatter parsing, heading chunks, authorization-domain deduplication, per-file checkpoints, a compactable journal, final source rescan, and atomic publication.
+- Added checksummed Catalog, compact Lexical, Vector, Derived, Temporal, and Hierarchy layers with deep cross-layer validation, immutable `READY` generations, per-source `CURRENT`, and an atomic multi-source runtime catalog that pins generation IDs and manifest hashes.
+- Hardened long-running publication with transition-gated dead-owner recovery, cross-process build-cache refresh, typed watch retries, a hash-only schema-v3 deployment fence that covers read-only roots and compiler policy, binding-sensitive catalog CAS, idempotent pin retries, and per-source serialization of the complete controlled-reingest transition.
+- Hardened concurrent lock publication for Linux inode reuse and slower filesystems without weakening fail-closed ownership checks.
+- Canonicalized explicit catalog and controlled-write state paths before Git/source isolation checks, and revalidated persisted generation/compiler/writer/write-state locations at online startup; no-op reuse now deep-validates layer semantics, and runtime-catalog-managed generations remain outside generic pruning until catalog-aware GC exists.
+- Persisted a required chunk-level Lexical index bound to record and version IDs and wired it directly into online BM25. Older local generations without `lexical.chunkIndex` now fail closed and require one source-online offline rebuild; source Markdown is never migrated or modified.
+- Serialized cross-process publication, validated the exact generation pins produced by each run before catalog publication, added catalog checksum compare-and-swap, and avoided generation or catalog churn when the fully read-and-hashed source snapshot and compilation contracts are unchanged.
+- Added artifact-only online queries with server-owned Source/Project/Mode/Path permissions, concurrently orchestrated BM25/Dense/Metadata/Temporal/Hierarchy recall, RRF, optional fixed-loopback reranking, visibility rechecks, near-duplicate suppression, extractive compression, attributable Evidence Packs, and safe refusal under a cooperative deadline budget.
+- Clarified that 5,000 ms is a cooperative query budget and safe-release boundary. The current O(N)/O(ND) baseline still requires target-hardware, private-corpus acceptance before claiming a five-second wall-clock SLO.
+- Added provider-neutral controlled writes for explicitly writable ordinary directories: source/version-bound proposals, structured diffs, deterministic risk, private exact human review, one-time approval, CAS/atomic publication, recovery-aware receipts, hash-chain audit, resumable one-time rollback, reingestion, catalog pin update, and runtime reload.
+- Reported controlled-write eligibility at source level while reauthorizing every target path during prepare. MCP limits `after_content` to 262,144 UTF-8 bytes and a complete private review document to 1,000,000 bytes.
+- Documented the two reload paths: an external offline catalog publication requires restarting or recreating the online bootstrap because `runtime.reload()` does not reread the catalog, while an in-process controlled write validates and updates its exact pin before hot reload.
+- Made the compiled second-brain MCP and read-only HTTP service the default package entry points; retained the 1.2 request-time services only under explicit `legacy` names. MCP mutation tools remain absent by default and require a trusted host opt-in.
+- Added unified filesystem ingestion for Vault and ordinary-directory sources, safe directory and injectable Obsidian writer contracts, a bound-principal Runtime read facade, fixed-loopback embedding/reranker adapters, offline CLI/watch, MCP, and authenticated local HTTP. A separately pluggable Vault reader remains host work.
+- Strengthened the release privacy gate to inspect the complete Git candidate and reject personal knowledge paths, runtime catalogs/generations/write state, credentials, local absolute paths, symlinks, binary data, and oversized files. Tests continue to use only synthetic temporary Markdown.
+- Documented that external FAT/exFAT volumes may hold repository code but are not supported for sensitive runtime state; macOS catalog, generation, checkpoint, approval, audit, and rollback data require a private APFS application-data location.
+
+## 1.2.0 — 2026-09-15
+
+- Kept the Graph Communities plugin's existing local, read-only graph classification and visualization behavior; this release does not add automatic note or memory writeback to the plugin.
+- Updated the optional MCP gateway to use a conservative UTF-8-byte upper bound for chunks and complete evidence packs rather than presenting the budget as an exact provider-token count.
+- Added a strict catalog for 1–16 non-overlapping local Markdown roots, with separate source identities and generations, deterministic federated ranking, one global context budget, and explicit partial-source failures.
+- Added checksummed persistent generations with validated schema/config/source metadata, atomic publication, restart reuse, and fail-closed rebuilding when validation fails.
+- Added stable opaque IDs for source, document, version, span, and chunk evidence so citations remain portable without revealing absolute local paths.
+- Added `required`, `trusted-local`, and `disabled` transmission-review modes. `trusted-local` bypasses review only for local STDIO; HTTP continues to require review.
+- Strengthened retrieval-scope and frontmatter policy handling so untrusted note metadata may restrict access but cannot promote generated, sensitive, control, or historical content into the default corpus.
+- Established a read-only retrieval foundation for future model-neutral `agent-memory/v1` Markdown records. Full schema validation, automatic memory writes, semantic conflict adjudication, and user-approved forgetting are not implemented.
+
 ## 0.7.0 — 2026-09-15
 
 - Added opaque stable IDs for sources, documents, versions, spans, and chunks.

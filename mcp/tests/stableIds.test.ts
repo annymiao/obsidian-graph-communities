@@ -24,6 +24,15 @@ test('normalizes macOS NFC and NFD spellings to the same identities', () => {
 });
 
 test('normalizes Windows source and relative document paths without host dependence', () => {
+	const syntheticUncSource = [
+		'\\\\',
+		'Server',
+		'\\',
+		'Share',
+		'\\',
+		'Knowledge',
+		'\\',
+	].join('');
 	assert.equal(
 		normalizeSourceIdentity('C:\\Synthetic\\OWNER\\Caf\u00e9 Vault\\'),
 		'win32:c:/synthetic/owner/caf\u00e9 vault',
@@ -33,8 +42,8 @@ test('normalizes Windows source and relative document paths without host depende
 		createSourceId('c:/synthetic/owner/cafe\u0301 vault'),
 	);
 	assert.equal(
-		createSourceId('\\\\Server\\Share\\Knowledge\\'),
-		createSourceId('\\\\server\\share\\knowledge'),
+		createSourceId(syntheticUncSource),
+		createSourceId(syntheticUncSource.toLocaleLowerCase()),
 	);
 	assert.equal(
 		normalizeDocumentPath('.\\Projects\\2026\\..\\Plan.md'),
@@ -104,9 +113,10 @@ test('public IDs never embed absolute paths or document names', () => {
 
 test('rejects absolute, escaping, ambiguous, and invalid identity inputs', () => {
 	const sourceId = createSourceId('test-vault');
+	const syntheticUncDocument = ['\\\\', 'server', '\\', 'share', '\\', 'note.md'].join('');
 	assert.throws(() => createDocumentId(sourceId, '/private/note.md'), /relative/u);
 	assert.throws(() => createDocumentId(sourceId, 'C:\\private\\note.md'), /relative/u);
-	assert.throws(() => createDocumentId(sourceId, '\\\\server\\share\\note.md'), /relative/u);
+	assert.throws(() => createDocumentId(sourceId, syntheticUncDocument), /relative/u);
 	assert.throws(() => createDocumentId(sourceId, '../outside.md'), /escape/u);
 
 	const documentId = createDocumentId(sourceId, 'inside.md');

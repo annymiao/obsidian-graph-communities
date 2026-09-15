@@ -1,8 +1,18 @@
 .DS_Store
+._*
+.AppleDouble/
 .env
 .env.*
 !.env.example
 .obsidian/
+.agents/
+.claude/
+.codex/
+.continue/
+.cursor/
+.gemini/
+.idea/
+.vscode/
 *.key
 *.pem
 *.p12
@@ -23,6 +33,42 @@ knowledge-index.json
 index-manifest.json
 .knowledge-artifacts/
 knowledge-artifacts/
+
+# Second-brain compiler and controlled-writer state. These files can contain
+# source-derived text, evidence, approvals, rollback material, and local paths.
+second-brain-v1/
+**/second-brain-v1/
+**/.second-brain*/
+**/runtime-catalog*.json
+**/CURRENT
+**/PREVIOUS
+**/READY
+**/generations/
+**/derived-artifacts/
+**/compiler-state/
+**/compiler-state*.json
+**/build-state*.json
+**/compiler-checkpoint*/
+**/checkpoint*.json
+**/ingest-journal*
+**/writer-state/
+**/controlled-write-state/
+**/writer-state*.json
+**/writer-lock*
+**/write-lock*
+**/audit/
+**/audit-log*
+**/audit-ledger*
+**/rollback/
+**/rollbacks/
+**/rollback-capsules/
+**/approval/
+**/approvals/
+**/approval*.json
+**/approval-markers/
+**/payload/
+**/payloads/
+**/payload*.json
 
 # Personal knowledge and attachment boundaries
 vault/

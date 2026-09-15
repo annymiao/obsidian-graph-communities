@@ -94,7 +94,7 @@ const NON_RETRIEVABLE_GRAPH_REASON = /(?:generated|system|duplicate|navigation|e
 
 export function classifyRetrieval(input: PolicyInput): RetrievalDecision {
 	const normalizedPath = normalizePath(input.path);
-	const lowerPath = normalizedPath.normalize('NFKC').toLocaleLowerCase();
+	const lowerPath = normalizedPath.normalize('NFKC').toLowerCase();
 	const segments = lowerPath.split('/');
 	const basename = segments.at(-1) ?? '';
 	const type = scalar(input.frontmatter.type);
@@ -298,13 +298,13 @@ function parsePolicyField<T extends string>(
 		if (raw.length !== 1) return { value: null, invalid: true };
 		const only = raw[0];
 		if (typeof only !== 'string') return { value: null, invalid: true };
-		const value = normalize(only.trim().toLocaleLowerCase());
+		const value = normalize(only.trim().toLowerCase());
 		return { value, invalid: value === null };
 	}
 	if (typeof raw !== 'string' || !raw.trim()) {
 		return { value: null, invalid: true };
 	}
-	const value = normalize(raw.trim().toLocaleLowerCase());
+	const value = normalize(raw.trim().toLowerCase());
 	return { value, invalid: value === null };
 }
 
@@ -329,15 +329,15 @@ function normalizeCorpus(value: string): KnowledgeCorpus | null {
 }
 
 function scalar(value: FrontmatterValue | undefined): string {
-	if (Array.isArray(value)) return String(value[0] ?? '').trim().toLocaleLowerCase();
+	if (Array.isArray(value)) return String(value[0] ?? '').trim().toLowerCase();
 	if (value === null || value === undefined) return '';
-	return String(value).trim().toLocaleLowerCase();
+	return String(value).trim().toLowerCase();
 }
 
 function booleanValue(value: FrontmatterValue | undefined): boolean {
 	if (value === true || value === 1) return true;
 	if (typeof value !== 'string') return false;
-	return ['true', 'yes', 'on', '1'].includes(value.trim().toLocaleLowerCase());
+	return ['true', 'yes', 'on', '1'].includes(value.trim().toLowerCase());
 }
 
 function meaningfulBody(value: string): boolean {
@@ -354,7 +354,7 @@ function isNavigation(input: PolicyInput, basename: string, type: string): boole
 	const names = [basename.replace(/\.md$/iu, ''), input.title, ...input.tags]
 		.join(' ')
 		.normalize('NFKC')
-		.toLocaleLowerCase();
+		.toLowerCase();
 	if (!/(?:readme|index|dashboard|homepage|overview|contents|目录|索引|导航|首页|总览|概览)/iu.test(names)) {
 		return false;
 	}

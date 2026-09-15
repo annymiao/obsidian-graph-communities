@@ -1,6 +1,6 @@
 import { constants as bufferConstants } from 'node:buffer';
 import { createHash, randomBytes } from 'node:crypto';
-import { constants } from 'node:fs';
+import { constants, type Stats } from 'node:fs';
 import {
 	lstat,
 	mkdir,
@@ -13,6 +13,10 @@ import {
 	unlink,
 } from 'node:fs/promises';
 import path from 'node:path';
+import {
+	PrivateDirectoryLockBusyError,
+	withPrivateDirectoryLock,
+} from './persistence/privateDirectoryLock.js';
 
 export const GENERATION_STORE_SCHEMA_VERSION = 1 as const;
 
@@ -30,7 +34,6 @@ const DEFAULT_LOCK_TIMEOUT_MS = 5_000;
 const MAX_CONTROL_FILE_BYTES = 64 * 1024;
 const GENERATION_ID_PATTERN = /^gen-[0-9]{13}-[a-f0-9]{32}$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
-const LOCK_TOKEN_PATTERN = /^[a-f0-9]{32}$/;
 const NO_FOLLOW = constants.O_NOFOLLOW ?? 0;
 const DIRECTORY_FLAG = constants.O_DIRECTORY ?? 0;
 const READ_ONLY_FLAGS = constants.O_RDONLY | NO_FOLLOW;
@@ -86,13 +89,6 @@ interface GenerationPointer {
 	updatedAt: string;
 }
 
-interface WriterLockOwner {
-	schemaVersion: typeof GENERATION_STORE_SCHEMA_VERSION;
-	pid: number;
-	token: string;
-	createdAt: string;
-}
-
 interface DirectoryIdentity {
 	dev: number;
 	ino: number;
@@ -119,9 +115,16 @@ export class GenerationStoreCorruptionError extends GenerationStoreError {
 }
 
 export class GenerationStoreBusyError extends GenerationStoreError {
-	constructor(message: string) {
+	readonly code: 'GENERATION_STORE_LOCK_BUSY' | 'GENERATION_STORE_TRANSITION_GATE_BUSY';
+	readonly retryable: boolean;
+
+	constructor(message: string, transitionGateBusy = false) {
 		super(message);
 		this.name = 'GenerationStoreBusyError';
+		this.code = transitionGateBusy
+			? 'GENERATION_STORE_TRANSITION_GATE_BUSY'
+			: 'GENERATION_STORE_LOCK_BUSY';
+		this.retryable = true;
 	}
 }
 
@@ -133,12 +136,13 @@ export class GenerationStoreBusyError extends GenerationStoreError {
  * directory has been moved out of staging. CURRENT is then replaced by an atomic
  * same-directory rename. Unreferenced staging/final directories are never read.
  *
- * The store root and its parent are an OS-permission trust boundary: static
- * symlinks and identity changes are rejected, but Node.js 20 has no portable
- * openat/dirfd API that can defeat a malicious same-user process replacing an
- * ancestor between filesystem calls. Directory fsync is best-effort on Windows;
- * the atomic visibility guarantee still holds, while power-loss durability
- * depends on the underlying filesystem and platform.
+ * The canonical store root and its managed descendants reject static symlinks
+ * and stable identity changes. Node.js 20 has no portable openat/dirfd API,
+ * however, so this class does not claim to defeat a malicious same-user process
+ * that swaps an ancestor between validation and use. Pointer visibility changes
+ * use same-directory rename. Power-loss durability is claimed only when every
+ * requested directory fsync succeeds; unsupported directory fsync errors are
+ * tolerated on Windows, where no power-loss durability claim is made.
  */
 export class GenerationStore {
 	readonly configuredRootPath: string;
@@ -148,6 +152,7 @@ export class GenerationStore {
 	private initialization: Promise<void> | null = null;
 	private canonicalRootPath = '';
 	private rootIdentity: DirectoryIdentity | null = null;
+	private readonly managedDirectoryIdentities = new Map<string, DirectoryIdentity>();
 
 	constructor(rootPath: string, options: GenerationStoreOptions = {}) {
 		if (!rootPath || rootPath.includes('\0')) {
@@ -178,6 +183,11 @@ export class GenerationStore {
 		await this.ensureInitialized();
 	}
 
+	/** Test seam for simulating a process stop immediately before recovery visibility changes. */
+	protected async beforeRecoveryCurrentSwitch(): Promise<void> {
+		// Production implementation intentionally does nothing.
+	}
+
 	async publish(
 		payload: GenerationPayload,
 		options: PublishOptions = {},
@@ -191,6 +201,7 @@ export class GenerationStore {
 
 		await this.ensureInitialized();
 		return this.withWriterLock(async () => {
+			await this.assertStoreTopology();
 			const retainPrevious = options.retainPrevious ?? true;
 			const currentPointer = await this.readPointerOptional(CURRENT_FILE);
 			if (currentPointer) {
@@ -206,7 +217,11 @@ export class GenerationStore {
 			const finalPath = this.resolveManagedPath(GENERATIONS_DIRECTORY, generationId);
 			await this.requireMissing(finalPath, 'generation destination');
 			await mkdir(stagingPath, { mode: 0o700 });
-			await this.assertSafeDirectory(stagingPath, 'staging generation');
+			const stagingIdentity = await this.assertSafeDirectory(
+				stagingPath,
+				'staging generation',
+			);
+			await this.assertStoreTopology();
 
 			const payloadSha256 = sha256(encoded.bytes);
 			const manifest: GenerationManifest = {
@@ -230,17 +245,27 @@ export class GenerationStore {
 			};
 
 			await writeNewFile(this.resolveContainedFile(stagingPath, encoded.fileName), encoded.bytes);
+			await this.assertDirectoryIdentity(stagingPath, 'staging generation', stagingIdentity);
+			await this.assertStoreTopology();
 			await writeNewFile(this.resolveContainedFile(stagingPath, MANIFEST_FILE), manifestBytes);
+			await this.assertDirectoryIdentity(stagingPath, 'staging generation', stagingIdentity);
+			await this.assertStoreTopology();
 			// READY is deliberately the last file written in staging.
 			await writeNewFile(
 				this.resolveContainedFile(stagingPath, READY_FILE),
 				encodeControlJson(ready),
 			);
 			await syncDirectory(stagingPath);
+			await this.assertDirectoryIdentity(stagingPath, 'staging generation', stagingIdentity);
+			await this.assertStoreTopology();
 			await this.loadGenerationFromDirectory(stagingPath, generationId, manifestSha256);
 
+			await this.assertDirectoryIdentity(stagingPath, 'staging generation', stagingIdentity);
+			await this.assertStoreTopology();
 			await rename(stagingPath, finalPath);
 			await syncDirectory(this.resolveRootChild(GENERATIONS_DIRECTORY));
+			await this.assertStoreTopology();
+			await this.assertDirectoryIdentity(finalPath, `generation ${generationId}`, stagingIdentity);
 			await this.loadGeneration(generationId, manifestSha256);
 
 			const nextPointer: GenerationPointer = {
@@ -271,6 +296,7 @@ export class GenerationStore {
 	async quarantineCorruptState(): Promise<boolean> {
 		await this.ensureInitialized();
 		return this.withWriterLock(async () => {
+			await this.assertStoreTopology();
 			try {
 				const current = await this.readPointerOptional(CURRENT_FILE);
 				if (current) {
@@ -297,7 +323,9 @@ export class GenerationStore {
 					`quarantined-${pointerName}-${token}`,
 				);
 				await this.requireMissing(quarantinedPath, 'quarantined pointer destination');
+				await this.assertStoreTopology();
 				await rename(pointerPath, quarantinedPath);
+				await this.assertStoreTopology();
 			}
 			await syncDirectory(this.canonicalRootPath);
 			await syncDirectory(this.resolveRootChild(STAGING_DIRECTORY));
@@ -378,12 +406,12 @@ export class GenerationStore {
 				previousManifestSha256: newPrevious?.manifestSha256 ?? null,
 				updatedAt: new Date().toISOString(),
 			};
-			// For a healthy rollback, preserve the currently visible generation as
-			// the recovery/redo anchor before switching CURRENT. During recovery from
-			// a missing, malformed, or damaged CURRENT, PREVIOUS is the only verified
-			// anchor and must remain untouched until CURRENT is valid again.
-			if (currentPointer && currentGeneration && newPrevious) {
-				await this.writePointerAtomic(PREVIOUS_FILE, newPrevious);
+			// CURRENT contains both the selected generation and its next rollback
+			// target, so rollback uses one atomic state transition. PREVIOUS remains
+			// the publication-time recovery anchor; mutating it before CURRENT would
+			// lose that anchor if recovery stopped between the two writes.
+			if (!currentPointer || !currentGeneration) {
+				await this.beforeRecoveryCurrentSwitch();
 			}
 			await this.writePointerAtomic(CURRENT_FILE, nextPointer);
 			return target;
@@ -394,6 +422,10 @@ export class GenerationStore {
 	 * Removes only immutable generations that are not named by CURRENT or
 	 * PREVIOUS. The visibility pointers are verified under the writer lock before
 	 * any managed directory is moved to staging and deleted.
+	 *
+	 * This generic store cannot see a second-brain runtime catalog's exact pins.
+	 * Never call it for catalog-managed generation roots until a catalog-aware
+	 * retention coordinator has included every published pin in the retain set.
 	 */
 	async pruneUnreferenced(): Promise<string[]> {
 		await this.ensureInitialized();
@@ -411,7 +443,9 @@ export class GenerationStore {
 				previous?.generationId ?? null,
 			].filter((generationId): generationId is string => generationId !== null));
 			const generationsPath = this.resolveRootChild(GENERATIONS_DIRECTORY);
+			await this.assertStoreTopology();
 			const entries = await readdir(generationsPath, { withFileTypes: true });
+			await this.assertStoreTopology();
 			const removed: string[] = [];
 			for (const entry of entries.sort((first, second) => first.name.localeCompare(second.name))) {
 				if (!GENERATION_ID_PATTERN.test(entry.name)) {
@@ -426,13 +460,29 @@ export class GenerationStore {
 					);
 				}
 				const generationPath = this.resolveManagedPath(GENERATIONS_DIRECTORY, entry.name);
-				await this.assertSafeDirectory(generationPath, `generation ${entry.name}`);
+				const generationIdentity = await this.assertSafeDirectory(
+					generationPath,
+					`generation ${entry.name}`,
+				);
 				const stagedName = `pruned-${entry.name}-${randomBytes(8).toString('hex')}`;
 				const stagedPath = this.resolveManagedPath(STAGING_DIRECTORY, stagedName);
 				await this.requireMissing(stagedPath, 'pruned generation staging destination');
+				await this.assertDirectoryIdentity(
+					generationPath,
+					`generation ${entry.name}`,
+					generationIdentity,
+				);
+				await this.assertStoreTopology();
 				await rename(generationPath, stagedPath);
 				await syncDirectory(generationsPath);
+				await this.assertStoreTopology();
+				await this.assertDirectoryIdentity(
+					stagedPath,
+					`staged generation ${entry.name}`,
+					generationIdentity,
+				);
 				await rm(stagedPath, { recursive: true, force: true });
+				await this.assertStoreTopology();
 				await syncDirectory(this.resolveRootChild(STAGING_DIRECTORY));
 				removed.push(entry.name);
 			}
@@ -457,19 +507,25 @@ export class GenerationStore {
 				'Generation store root must be a real directory, not a symlink or file.',
 			);
 		}
+		assertPrivateDirectory(configuredStat, 'Generation store root');
 		this.canonicalRootPath = await realpath(this.configuredRootPath);
 		const canonicalStat = await stat(this.canonicalRootPath);
 		if (!canonicalStat.isDirectory()) {
 			throw new GenerationStoreCorruptionError('Generation store root is not a directory.');
 		}
+		assertPrivateDirectory(canonicalStat, 'Generation store root');
 		this.rootIdentity = { dev: canonicalStat.dev, ino: canonicalStat.ino };
 
 		for (const directoryName of [GENERATIONS_DIRECTORY, STAGING_DIRECTORY]) {
 			const directoryPath = this.resolveRootChild(directoryName);
 			await mkdir(directoryPath, { recursive: true, mode: 0o700 });
-			await this.assertSafeDirectory(directoryPath, directoryName);
+			const identity = await this.assertSafeDirectory(directoryPath, directoryName);
+			this.managedDirectoryIdentities.set(directoryName, identity);
 		}
 		await syncDirectory(this.canonicalRootPath);
+		// Persist the root directory entry itself when its parent supports directory
+		// fsync. Windows retains atomic visibility but may not provide this durability.
+		await syncDirectory(path.dirname(this.canonicalRootPath));
 	}
 
 	private async assertRootIdentity(): Promise<void> {
@@ -477,11 +533,20 @@ export class GenerationStore {
 			throw new GenerationStoreCorruptionError('Generation store was not initialized.');
 		}
 		const rootStat = await lstat(this.canonicalRootPath);
+		const resolvedRoot = await realpath(this.canonicalRootPath);
+		const verifiedRootStat = await lstat(this.canonicalRootPath);
+		assertPrivateDirectory(rootStat, 'Generation store root');
+		assertPrivateDirectory(verifiedRootStat, 'Generation store root');
 		if (
 			rootStat.isSymbolicLink()
 			|| !rootStat.isDirectory()
+			|| resolvedRoot !== this.canonicalRootPath
 			|| rootStat.dev !== this.rootIdentity.dev
 			|| rootStat.ino !== this.rootIdentity.ino
+			|| verifiedRootStat.isSymbolicLink()
+			|| !verifiedRootStat.isDirectory()
+			|| verifiedRootStat.dev !== rootStat.dev
+			|| verifiedRootStat.ino !== rootStat.ino
 		) {
 			throw new GenerationStoreCorruptionError(
 				'Generation store root changed after initialization.',
@@ -490,27 +555,62 @@ export class GenerationStore {
 	}
 
 	private async assertManagedDirectories(): Promise<void> {
-		await this.assertSafeDirectory(
-			this.resolveRootChild(GENERATIONS_DIRECTORY),
-			GENERATIONS_DIRECTORY,
-		);
-		await this.assertSafeDirectory(
-			this.resolveRootChild(STAGING_DIRECTORY),
-			STAGING_DIRECTORY,
-		);
+		for (const directoryName of [GENERATIONS_DIRECTORY, STAGING_DIRECTORY]) {
+			const actual = await this.assertSafeDirectory(
+				this.resolveRootChild(directoryName),
+				directoryName,
+			);
+			const expected = this.managedDirectoryIdentities.get(directoryName);
+			if (!expected || !sameDirectoryIdentity(actual, expected)) {
+				throw new GenerationStoreCorruptionError(
+					`${directoryName} changed after initialization.`,
+				);
+			}
+		}
 	}
 
-	private async assertSafeDirectory(directoryPath: string, label: string): Promise<void> {
+	private async assertSafeDirectory(
+		directoryPath: string,
+		label: string,
+	): Promise<DirectoryIdentity> {
 		this.assertContained(directoryPath);
 		const directoryStat = await lstat(directoryPath);
 		if (directoryStat.isSymbolicLink() || !directoryStat.isDirectory()) {
 			throw new GenerationStoreCorruptionError(`${label} must be a real directory.`);
 		}
+		assertPrivateDirectory(directoryStat, label);
 		const resolved = await realpath(directoryPath);
 		this.assertContained(resolved);
 		if (resolved !== directoryPath) {
 			throw new GenerationStoreCorruptionError(`${label} resolves through an unexpected symlink.`);
 		}
+		const verifiedStat = await lstat(directoryPath);
+		assertPrivateDirectory(verifiedStat, label);
+		if (
+			verifiedStat.isSymbolicLink()
+			|| !verifiedStat.isDirectory()
+			|| verifiedStat.dev !== directoryStat.dev
+			|| verifiedStat.ino !== directoryStat.ino
+		) {
+			throw new GenerationStoreCorruptionError(`${label} changed while it was validated.`);
+		}
+		return { dev: directoryStat.dev, ino: directoryStat.ino };
+	}
+
+	private async assertDirectoryIdentity(
+		directoryPath: string,
+		label: string,
+		expected: DirectoryIdentity,
+	): Promise<void> {
+		const actual = await this.assertSafeDirectory(directoryPath, label);
+		if (!sameDirectoryIdentity(actual, expected)) {
+			throw new GenerationStoreCorruptionError(`${label} changed during filesystem access.`);
+		}
+	}
+
+	private async assertStoreTopology(): Promise<void> {
+		await this.assertRootIdentity();
+		await this.assertManagedDirectories();
 	}
 
 	private async loadGeneration(
@@ -532,7 +632,11 @@ export class GenerationStore {
 		expectedGenerationId: string,
 		expectedManifestSha256?: string,
 	): Promise<StoredGeneration> {
-		await this.assertSafeDirectory(directoryPath, `generation ${expectedGenerationId}`);
+		await this.assertStoreTopology();
+		const directoryIdentity = await this.assertSafeDirectory(
+			directoryPath,
+			`generation ${expectedGenerationId}`,
+		);
 		const readyBytes = await readSecureFile(
 			this.resolveContainedFile(directoryPath, READY_FILE),
 			MAX_CONTROL_FILE_BYTES,
@@ -577,6 +681,12 @@ export class GenerationStore {
 				});
 			}
 		}
+		await this.assertDirectoryIdentity(
+			directoryPath,
+			`generation ${expectedGenerationId}`,
+			directoryIdentity,
+		);
+		await this.assertStoreTopology();
 		return { manifest, payload };
 	}
 
@@ -602,15 +712,21 @@ export class GenerationStore {
 	}
 
 	private async readPointerOptional(fileName: string): Promise<GenerationPointer | null> {
+		await this.assertStoreTopology();
 		const pointerPath = this.resolveRootChild(fileName);
 		let pointerBytes: Buffer;
 		try {
 			pointerBytes = await readSecureFile(pointerPath, MAX_CONTROL_FILE_BYTES);
 		} catch (error) {
-			if (isNodeError(error, 'ENOENT')) return null;
+			if (isNodeError(error, 'ENOENT')) {
+				await this.assertStoreTopology();
+				return null;
+			}
 			throw error;
 		}
-		return parseGenerationPointer(pointerBytes);
+		const pointer = parseGenerationPointer(pointerBytes);
+		await this.assertStoreTopology();
+		return pointer;
 	}
 
 	private async writePointerAtomic(fileName: string, pointer: GenerationPointer): Promise<void> {
@@ -618,6 +734,7 @@ export class GenerationStore {
 	}
 
 	private async writeRootFileAtomic(fileName: string, bytes: Buffer): Promise<void> {
+		await this.assertStoreTopology();
 		const targetPath = this.resolveRootChild(fileName);
 		await this.requireRegularFileOrMissing(targetPath, fileName);
 		const temporaryName = `.${fileName}.${process.pid}.${randomBytes(16).toString('hex')}.tmp`;
@@ -626,6 +743,7 @@ export class GenerationStore {
 		try {
 			await rename(temporaryPath, targetPath);
 			await syncDirectory(this.canonicalRootPath);
+			await this.assertStoreTopology();
 		} catch (error) {
 			await unlink(temporaryPath).catch(() => undefined);
 			throw error;
@@ -633,11 +751,13 @@ export class GenerationStore {
 	}
 
 	private async removeRootFileIfPresent(fileName: string): Promise<void> {
+		await this.assertStoreTopology();
 		const filePath = this.resolveRootChild(fileName);
 		try {
 			await this.requireRegularFileOrMissing(filePath, fileName);
 			await unlink(filePath);
 			await syncDirectory(this.canonicalRootPath);
+			await this.assertStoreTopology();
 		} catch (error) {
 			if (isNodeError(error, 'ENOENT')) return;
 			throw error;
@@ -645,116 +765,25 @@ export class GenerationStore {
 	}
 
 	private async withWriterLock<T>(operation: () => Promise<T>): Promise<T> {
-		const token = randomBytes(16).toString('hex');
-		await this.acquireWriterLock(token);
-		try {
-			return await operation();
-		} finally {
-			await this.releaseWriterLock(token);
-		}
-	}
-
-	private async acquireWriterLock(token: string): Promise<void> {
-		const deadline = Date.now() + this.lockTimeoutMs;
 		const lockPath = this.resolveRootChild(WRITER_LOCK_DIRECTORY);
-		for (;;) {
-			const temporaryLockPath = this.resolveManagedPath(
-				STAGING_DIRECTORY,
-				`lock-${process.pid}-${randomBytes(16).toString('hex')}`,
-			);
-			await mkdir(temporaryLockPath, { mode: 0o700 });
-			const owner: WriterLockOwner = {
-				schemaVersion: GENERATION_STORE_SCHEMA_VERSION,
-				pid: process.pid,
-				token,
-				createdAt: new Date().toISOString(),
-			};
-			await writeNewFile(
-				this.resolveContainedFile(temporaryLockPath, 'owner.json'),
-				encodeControlJson(owner),
-			);
-			await syncDirectory(temporaryLockPath);
-
-			try {
-				await rename(temporaryLockPath, lockPath);
-				await syncDirectory(this.canonicalRootPath);
-				return;
-			} catch (error) {
-				await rm(temporaryLockPath, { recursive: true, force: true });
-				if (!isAlreadyExistsError(error)) throw error;
-			}
-
-			const recovered = await this.recoverAbandonedLock(lockPath);
-			if (recovered) continue;
-			if (Date.now() >= deadline) {
-				throw new GenerationStoreBusyError('Generation store writer lock is busy.');
-			}
-			await delay(Math.min(25, Math.max(1, deadline - Date.now())));
-		}
-	}
-
-	private async recoverAbandonedLock(lockPath: string): Promise<boolean> {
-		let owner: WriterLockOwner;
 		try {
-			await this.assertSafeDirectory(lockPath, 'writer lock');
-			owner = parseWriterLockOwner(await readSecureFile(
-				this.resolveContainedFile(lockPath, 'owner.json'),
-				MAX_CONTROL_FILE_BYTES,
-			));
+			return await withPrivateDirectoryLock(
+				lockPath,
+				async () => {
+					await this.assertStoreTopology();
+					return operation();
+				},
+				{ timeoutMs: this.lockTimeoutMs },
+			);
 		} catch (error) {
-			if (isNodeError(error, 'ENOENT')) return true;
+			if (error instanceof PrivateDirectoryLockBusyError) {
+				throw new GenerationStoreBusyError(
+					error.message,
+					error.reason === 'transition-gate-busy',
+				);
+			}
 			throw error;
 		}
-		if (isProcessAlive(owner.pid)) return false;
-
-		const abandonedPath = this.resolveManagedPath(
-			STAGING_DIRECTORY,
-			`abandoned-lock-${owner.token}-${randomBytes(8).toString('hex')}`,
-		);
-		try {
-			await rename(lockPath, abandonedPath);
-		} catch (error) {
-			if (isNodeError(error, 'ENOENT')) return true;
-			throw error;
-		}
-		await this.assertSafeDirectory(abandonedPath, 'abandoned writer lock');
-		const movedOwner = parseWriterLockOwner(await readSecureFile(
-			this.resolveContainedFile(abandonedPath, 'owner.json'),
-			MAX_CONTROL_FILE_BYTES,
-		));
-		if (movedOwner.token !== owner.token) {
-			throw new GenerationStoreCorruptionError('Writer lock changed during recovery.');
-		}
-		await rm(abandonedPath, { recursive: true, force: true });
-		await syncDirectory(this.canonicalRootPath);
-		return true;
-	}
-
-	private async releaseWriterLock(token: string): Promise<void> {
-		const lockPath = this.resolveRootChild(WRITER_LOCK_DIRECTORY);
-		await this.assertSafeDirectory(lockPath, 'writer lock');
-		const owner = parseWriterLockOwner(await readSecureFile(
-			this.resolveContainedFile(lockPath, 'owner.json'),
-			MAX_CONTROL_FILE_BYTES,
-		));
-		if (owner.pid !== process.pid || owner.token !== token) {
-			throw new GenerationStoreCorruptionError('Writer lock ownership changed before release.');
-		}
-		const releasedPath = this.resolveManagedPath(
-			STAGING_DIRECTORY,
-			`released-lock-${token}-${randomBytes(8).toString('hex')}`,
-		);
-		await rename(lockPath, releasedPath);
-		await this.assertSafeDirectory(releasedPath, 'released writer lock');
-		const movedOwner = parseWriterLockOwner(await readSecureFile(
-			this.resolveContainedFile(releasedPath, 'owner.json'),
-			MAX_CONTROL_FILE_BYTES,
-		));
-		if (movedOwner.pid !== process.pid || movedOwner.token !== token) {
-			throw new GenerationStoreCorruptionError('Writer lock changed during release.');
-		}
-		await rm(releasedPath, { recursive: true, force: true });
-		await syncDirectory(this.canonicalRootPath);
 	}
 
 	private resolveRootChild(name: string): string {
@@ -1012,37 +1041,6 @@ function parseGenerationPointer(bytes: Buffer): GenerationPointer {
 	return pointer;
 }
 
-function parseWriterLockOwner(bytes: Buffer): WriterLockOwner {
-	const value = parseControlJson(bytes, 'writer lock owner');
-	if (!isPlainRecord(value) || !hasExactKeys(value, [
-		'schemaVersion',
-		'pid',
-		'token',
-		'createdAt',
-	])) {
-		throw new GenerationStoreCorruptionError('Writer lock owner schema is invalid.');
-	}
-	if (
-		value.schemaVersion !== GENERATION_STORE_SCHEMA_VERSION
-		|| typeof value.pid !== 'number'
-		|| !Number.isSafeInteger(value.pid)
-		|| value.pid <= 0
-		|| typeof value.token !== 'string'
-		|| !LOCK_TOKEN_PATTERN.test(value.token)
-	) {
-		throw new GenerationStoreCorruptionError('Writer lock owner is invalid.');
-	}
-	assertIsoDate(value.createdAt, 'writer lock createdAt');
-	const owner: WriterLockOwner = {
-		schemaVersion: GENERATION_STORE_SCHEMA_VERSION,
-		pid: value.pid,
-		token: value.token,
-		createdAt: value.createdAt,
-	};
-	assertCanonicalControlJson(bytes, owner, 'writer lock owner');
-	return owner;
-}
-
 function parseControlJson(bytes: Buffer, label: string): unknown {
 	try {
 		return JSON.parse(bytes.toString('utf8')) as unknown;
@@ -1083,7 +1081,7 @@ async function readSecureFile(filePath: string, maximumBytes: number): Promise<B
 		|| beforeLstat.nlink !== 1
 		|| beforeLstat.size > maximumBytes
 	) {
-		throw new GenerationStoreCorruptionError(`Unsafe or oversized generation file: ${filePath}`);
+		throw new GenerationStoreCorruptionError('Unsafe or oversized generation file.');
 	}
 	const handle = await open(filePath, READ_ONLY_FLAGS);
 	try {
@@ -1096,7 +1094,7 @@ async function readSecureFile(filePath: string, maximumBytes: number): Promise<B
 			|| beforeRead.size !== beforeLstat.size
 			|| beforeRead.size > maximumBytes
 		) {
-			throw new GenerationStoreCorruptionError(`Generation file changed while opening: ${filePath}`);
+			throw new GenerationStoreCorruptionError('Generation file changed while opening.');
 		}
 		const bytes = Buffer.alloc(beforeRead.size);
 		let offset = 0;
@@ -1117,7 +1115,7 @@ async function readSecureFile(filePath: string, maximumBytes: number): Promise<B
 			|| offset !== beforeRead.size
 			|| overflow.bytesRead !== 0
 		) {
-			throw new GenerationStoreCorruptionError(`Generation file changed while reading: ${filePath}`);
+			throw new GenerationStoreCorruptionError('Generation file changed while reading.');
 		}
 		return bytes;
 	} finally {
@@ -1196,6 +1194,25 @@ function hasExactKeys(record: Record<string, unknown>, expected: readonly string
 		&& keys.every((key, index) => key === sortedExpected[index]);
 }
 
+function assertPrivateDirectory(directoryStat: Stats, label: string): void {
+	if (process.platform === 'win32') return;
+	if ((directoryStat.mode & 0o077) !== 0) {
+		throw new GenerationStoreCorruptionError(
+			`${label} must not grant group or other filesystem permissions.`,
+		);
+	}
+	const getUserId = process.getuid;
+	if (typeof getUserId === 'function' && directoryStat.uid !== getUserId()) {
+		throw new GenerationStoreCorruptionError(
+			`${label} must be owned by the current service user.`,
+		);
+	}
+}
+
+function sameDirectoryIdentity(first: DirectoryIdentity, second: DirectoryIdentity): boolean {
+	return first.dev === second.dev && first.ino === second.ino;
+}
+
 function isSimpleName(value: string): boolean {
 	return Boolean(value)
 		&& value !== '.'
@@ -1219,21 +1236,4 @@ function readPositiveSafeInteger(
 
 function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {
 	return error instanceof Error && 'code' in error && error.code === code;
-}
-
-function isAlreadyExistsError(error: unknown): boolean {
-	return isNodeError(error, 'EEXIST') || isNodeError(error, 'ENOTEMPTY');
-}
-
-function isProcessAlive(pid: number): boolean {
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (error) {
-		return !isNodeError(error, 'ESRCH');
-	}
-}
-
-function delay(milliseconds: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

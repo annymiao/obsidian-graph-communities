@@ -1,18 +1,55 @@
 {
 	"name": "obsidian-knowledge-gateway",
-	"version": "0.7.0",
+	"version": "1.3.0",
 	"private": true,
-	"description": "Read-only MCP server for retrieving relevant knowledge from an Obsidian vault.",
+	"description": "Local-first compiled retrieval and human-approved knowledge updates for Obsidian and Markdown sources.",
 	"type": "module",
+	"exports": {
+		"./second-brain": {
+			"types": "./dist/src/secondBrain/index.d.ts",
+			"import": "./dist/src/secondBrain/index.js"
+		},
+		"./compiler": {
+			"types": "./dist/src/compiler/index.d.ts",
+			"import": "./dist/src/compiler/index.js"
+		},
+		"./hybrid": {
+			"types": "./dist/src/hybrid/index.d.ts",
+			"import": "./dist/src/hybrid/index.js"
+		},
+		"./persistence": {
+			"types": "./dist/src/persistence/index.d.ts",
+			"import": "./dist/src/persistence/index.js"
+		},
+		"./write": {
+			"types": "./dist/src/write/index.d.ts",
+			"import": "./dist/src/write/index.js"
+		},
+		"./adapters": {
+			"types": "./dist/src/adapters/index.d.ts",
+			"import": "./dist/src/adapters/index.js"
+		}
+	},
 	"bin": {
-		"obsidian-knowledge-mcp": "dist/src/index.js",
-		"obsidian-knowledge-gateway": "dist/src/http.js"
+		"obsidian-knowledge-mcp": "dist/src/secondBrainMcp.js",
+		"obsidian-knowledge-gateway": "dist/src/secondBrainHttp.js",
+		"obsidian-second-brain-compile": "dist/src/offlineCompile.js",
+		"obsidian-second-brain-mcp": "dist/src/secondBrainMcp.js",
+		"obsidian-second-brain-gateway": "dist/src/secondBrainHttp.js",
+		"obsidian-knowledge-mcp-legacy": "dist/src/index.js",
+		"obsidian-knowledge-gateway-legacy": "dist/src/http.js"
 	},
 	"scripts": {
 		"build": "tsc -p tsconfig.json",
-		"start": "node dist/src/index.js",
-		"start:http": "node dist/src/http.js",
-		"test": "node --test dist/tests/*.test.js",
+		"start": "node dist/src/secondBrainMcp.js",
+		"start:http": "node dist/src/secondBrainHttp.js",
+		"compile:second-brain": "node dist/src/offlineCompile.js --once",
+		"watch:second-brain": "node dist/src/offlineCompile.js --watch",
+		"start:second-brain": "node dist/src/secondBrainMcp.js",
+		"start:second-brain:http": "node dist/src/secondBrainHttp.js",
+		"start:legacy": "node dist/src/index.js",
+		"start:legacy:http": "node dist/src/http.js",
+		"test": "node scripts/test.mjs",
 		"benchmark": "node scripts/benchmark-retrieval.mjs"
 	},
 	"dependencies": {

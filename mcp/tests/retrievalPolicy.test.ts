@@ -113,3 +113,14 @@ test('legacy graph exclusions remain available only through explicit history mod
 	assert.equal(modeAllows(decision.retrievalScope, 'default'), false);
 	assert.equal(modeAllows(decision.retrievalScope, 'history'), true);
 });
+
+test('safety normalization is invariant under the Turkish-I case mapping', () => {
+	assert.equal('I'.toLocaleLowerCase('tr-TR'), 'ı');
+	assert.equal('I'.toLowerCase(), 'i');
+	assert.equal(classify('.GIT/private.md').retrievalScope, 'never');
+	assert.equal(classify('30-Shared-Knowledge/private.md', {
+		type: 'KNOWLEDGE-CARD',
+		status: 'ACTIVE',
+		sensitivity: 'PRIVATE',
+	}).retrievalScope, 'never');
+});

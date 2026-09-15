@@ -8,11 +8,15 @@ subtopic's stable color. Secondary topics remain available as relationship, sear
 blend the node color or enter theme percentages. Structural notes are removed from the visible graph, and each
 remaining link is drawn from its source color to its target color.
 
-The repository also contains an optional read-only knowledge gateway under [`mcp/`](mcp/). It gives AI clients a
-small, source-linked evidence pack instead of exposing the whole Vault: stable core knowledge is the default, while
-project, reference, and history corpora require an explicit retrieval mode. Version 0.7 adds opaque evidence IDs and
-verified local index generations so an unchanged Vault can be reopened without reparsing every note. The Obsidian
-plugin remains fully local and independent of this gateway.
+The repository also contains an optional compiled second-brain service under [`mcp/`](mcp/). Version 1.3 separates a
+slow, resumable offline compiler from the deadline-aware query process. It persists checksummed Catalog, Lexical,
+Vector, Temporal, Hierarchy, and Derived artifacts; pins a validated multi-source generation set; applies server-owned
+Source/Project/Mode/Path permissions before concurrently orchestrated hybrid retrieval; and returns a small, attributable Evidence Pack
+or a safe refusal. A controlled-write protocol is available for explicitly writable ordinary directories, but MCP
+mutation tools are absent by default and HTTP is always read-only. The Obsidian graph plugin remains fully local,
+read-only, and independent of the service.
+
+The five-second setting is a cooperative query budget and safe-release boundary, not a proven wall-clock SLO for every corpus size; the current baseline still includes O(N) and O(ND) stages. Per-source `CURRENT` files are physical pointers, while the atomically published runtime catalog is the validated multi-source online snapshot. An external offline catalog publication requires restarting or recreating the online bootstrap because `runtime.reload()` does not reread that catalog; controlled writes can validate and hot-reload their new pin inside the same process. See the [five-layer implementation audit](docs/FIVE_LAYER_IMPLEMENTATION_AUDIT_1.3.md) for exact completion and acceptance status.
 
 ## What it does
 
@@ -133,7 +137,12 @@ The model is fully local and rule-based. It reads complete Markdown notes but do
 - Settings are stored using Obsidian's standard plugin data mechanism.
 - Disabling or unloading the plugin restores the theme's normal node colors.
 - GitHub releases contain only `main.js`, `manifest.json`, and `styles.css`; no vault notes, generated indexes, local paths, or plugin settings are packaged.
-- The optional gateway stores rebuildable derived generations in the user's OS application-data directory by default, never inside the repository or Vault. A mode payload contains each eligible note's bounded Markdown content plus a second chunked copy, and metadata for every discovered Markdown path; treat it as sensitive local data.
+- The optional service stores rebuildable generations and operational write state outside the source roots and Git. These artifacts can contain complete chunks, paths, vectors, diffs, audit data, and rollback material; treat them as sensitive local data.
+- It can compile 1–16 explicitly configured local Markdown roots without moving their files. An atomic runtime catalog pins every source generation and manifest hash, so one source cannot expose a mixed snapshot by advancing alone.
+- Query requests can only narrow the server-created Source/Project/Mode/Path Principal. BM25, Dense, Metadata, Temporal, and Hierarchy recall run over the same visible records before fusion, deduplication, and extractive compression.
+- MCP writes are disabled by default. Enabling `trusted-mcp-app` asserts that the host isolates app-only tools and private metadata from models; it is a deployment trust boundary, not cryptographic proof of user presence. Advertised write availability is source-level, and every target path is authorized again when a proposal is prepared. HTTP has no mutation routes.
+- Upgrading older local second-brain artifacts requires one source-online offline compile because persisted `lexical.chunkIndex` is now mandatory. Runtime catalog schema v3 has no in-place v2 migration: first stop every publisher and online process using that catalog, move the old private catalog to an isolated backup (or select a new catalog path), run one offline compile, then restart the online service. Compatible generations may be reused; Markdown sources are not modified. Watch still reads and hashes eligible Markdown to prove that it is unchanged, but a matching scan reuses the same generation and does not rewrite a logically identical runtime catalog. MCP caps `after_content` at 262,144 UTF-8 bytes and the complete private review document at 1,000,000 bytes.
+- Algorithms may propose associations and corrections, but source/project authority, conflicting truth, final durable content, deletion, and rollback remain trusted-configuration or human decisions.
 - See [SECURITY.md](SECURITY.md) for the release boundary and vulnerability reporting process.
 
 ## Compatibility note
@@ -164,8 +173,9 @@ Source layout:
 - `scripts/build.mjs` — creates the distributable `main.js`.
 - `scripts/audit-release.mjs` — verifies the release allowlist, versions, local-path boundary, and network-free runtime.
 - `tests/graph-core.test.js` — deterministic algorithm tests.
-- `mcp/` — optional read-only, scope-aware retrieval service with synthetic privacy and retrieval regressions.
-- `docs/SECOND-BRAIN-ROADMAP.md` — ordered plan from bounded retrieval to distributed sources and cross-model memory.
+- `mcp/` — optional five-layer compiled second-brain service with synthetic privacy, recovery, retrieval, and controlled-write regressions.
+- `docs/SECOND-BRAIN-ROADMAP.md` — implemented 1.3 framework, ordering, human boundaries, and remaining private acceptance work.
+- `docs/FIVE_LAYER_IMPLEMENTATION_AUDIT_1.3.md` — target-to-default-wiring audit, operational limits, and items that still require real-corpus or host acceptance.
 
 ## License
 
