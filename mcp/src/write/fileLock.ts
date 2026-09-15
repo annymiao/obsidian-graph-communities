@@ -2,14 +2,21 @@ import { randomBytes } from 'node:crypto';
 import { constants } from 'node:fs';
 import { lstat, open, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
+import { PrivateFileChangedError, readPrivateFile } from '../privateFs.js';
 import { CONTROLLED_WRITE_SCHEMA_VERSION } from './contracts.js';
 import { assertIsoTimestamp, canonicalJson } from './integrity.js';
 
 const NO_FOLLOW = constants.O_NOFOLLOW ?? 0;
 const DIRECTORY_FLAG = constants.O_DIRECTORY ?? 0;
 const CREATE_NEW = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NO_FOLLOW;
-const READ_ONLY = constants.O_RDONLY | NO_FOLLOW;
 const LOCK_TOKEN_PATTERN = /^[a-f0-9]{32}$/u;
+
+class FileLockOwnerNotYetPublishedError extends Error {
+	constructor(options?: ErrorOptions) {
+		super('Lock owner JSON is not yet completely published.', options);
+		this.name = 'FileLockOwnerNotYetPublishedError';
+	}
+}
 
 export interface FileLockOwner {
 	schemaVersion: typeof CONTROLLED_WRITE_SCHEMA_VERSION;
@@ -50,7 +57,18 @@ export async function withOwnedFileLock<T>(
 	while (true) {
 		const recoveryPath = `${resolvedLockPath}.recovery`;
 		if (await pathExists(recoveryPath)) {
-			await recoverAbandonedRecoveryMarker(recoveryPath, isPidAlive);
+			try {
+				await recoverAbandonedRecoveryMarker(recoveryPath, isPidAlive);
+			} catch (error) {
+				await waitForOwnerPublication(
+					error,
+					'lock recovery owner',
+					clock,
+					deadline,
+					retryMs,
+				);
+				continue;
+			}
 			if (clock() >= deadline) throw new Error('Timed out waiting for lock recovery.');
 			await delay(retryMs);
 			continue;
@@ -60,7 +78,19 @@ export async function withOwnedFileLock<T>(
 			break;
 		} catch (error) {
 			if (!isNodeError(error, 'EEXIST')) throw error;
-			const observed = await readOwnerFile(resolvedLockPath);
+			let observed: FileLockOwner;
+			try {
+				observed = await readOwnerFile(resolvedLockPath);
+			} catch (observationError) {
+				await waitForOwnerPublication(
+					observationError,
+					'lock owner',
+					clock,
+					deadline,
+					retryMs,
+				);
+				continue;
+			}
 			if (!isPidAlive(observed.pid)) {
 				await isolateStaleOwner(resolvedLockPath, observed, owner, isPidAlive);
 				continue;
@@ -168,27 +198,39 @@ async function releaseOwnedFile(lockPath: string, owner: FileLockOwner): Promise
 }
 
 async function readOwnerFile(lockPath: string): Promise<FileLockOwner> {
-	const pathInfo = await lstat(lockPath);
-	if (!pathInfo.isFile() || pathInfo.isSymbolicLink() || pathInfo.size > 4_096) {
-		throw new Error('Lock must be a bounded real regular file.');
-	}
-	const handle = await open(lockPath, READ_ONLY);
+	const bytes = await readPrivateFile(lockPath, {
+		label: 'Lock owner',
+		maximumBytes: 4_096,
+	});
+	let parsed: unknown;
 	try {
-		const info = await handle.stat();
-		if (!info.isFile() || info.dev !== pathInfo.dev || info.ino !== pathInfo.ino || info.size > 4_096) {
-			throw new Error('Lock identity changed while reading.');
-		}
-		let parsed: unknown;
-		try {
-			parsed = JSON.parse(await handle.readFile('utf8'));
-		} catch (error) {
-			throw new Error('Lock owner JSON is invalid.', { cause: error });
-		}
-		assertOwner(parsed);
-		return parsed;
-	} finally {
-		await handle.close();
+		parsed = JSON.parse(bytes.toString('utf8')) as unknown;
+	} catch (error) {
+		throw new FileLockOwnerNotYetPublishedError({ cause: error });
 	}
+	assertOwner(parsed);
+	return parsed;
+}
+
+async function waitForOwnerPublication(
+	error: unknown,
+	label: string,
+	clock: () => number,
+	deadline: number,
+	retryMs: number,
+): Promise<void> {
+	if (!isTransientOwnerObservation(error)) throw error;
+	const remainingMs = deadline - clock();
+	if (remainingMs <= 0) {
+		throw new Error(`Timed out waiting for ${label} publication.`, { cause: error });
+	}
+	await delay(Math.min(retryMs, remainingMs));
+}
+
+function isTransientOwnerObservation(error: unknown): boolean {
+	return isNodeError(error, 'ENOENT')
+		|| error instanceof PrivateFileChangedError
+		|| error instanceof FileLockOwnerNotYetPublishedError;
 }
 
 function createOwner(pid: number, timestamp: number): FileLockOwner {

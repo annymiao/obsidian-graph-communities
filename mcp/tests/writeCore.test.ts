@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -442,6 +442,73 @@ test('audit lock recovers a dead PID owner but never steals from a live PID', as
 		})}\n`, { mode: 0o600 });
 		await assert.rejects(ledger.append(event), /live PID/u);
 		assert.equal(JSON.parse(await readFile(lockPath, 'utf8')).token, '6'.repeat(32));
+	});
+});
+
+test('owned file lock waits for in-progress owner and recovery-marker publication', async () => {
+	await withSyntheticRoot(async (root) => {
+		const deadPid = 2_147_483_647;
+		const completeOwner = async (filePath: string, token: string): Promise<void> => {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			await writeFile(filePath, `${JSON.stringify({
+				schemaVersion: 1,
+				pid: deadPid,
+				token,
+				createdAt: '2000-01-01T00:00:00.000Z',
+			})}\n`, 'utf8');
+		};
+		for (const [suffix, token] of [
+			['', '7'.repeat(32)],
+			['.recovery', '8'.repeat(32)],
+		] as const) {
+			const lockPath = path.join(root, `.publication-${token[0]}.lock`);
+			const incompletePath = `${lockPath}${suffix}`;
+			await writeFile(incompletePath, '{', { encoding: 'utf8', mode: 0o600 });
+			let entered = false;
+			await Promise.all([
+				completeOwner(incompletePath, token),
+				withOwnedFileLock(lockPath, async () => {
+					entered = true;
+				}, {
+					timeoutMs: 1_000,
+					retryMs: 2,
+					isPidAlive: (pid) => pid === process.pid,
+				}),
+			]);
+			assert.equal(entered, true);
+			await assert.rejects(lstat(lockPath), { code: 'ENOENT' });
+			await assert.rejects(lstat(`${lockPath}.recovery`), { code: 'ENOENT' });
+		}
+	});
+});
+
+test('owned file lock times out fail-closed on a permanently malformed owner', async () => {
+	await withSyntheticRoot(async (root) => {
+		const lockPath = path.join(root, '.malformed.lock');
+		await writeFile(lockPath, '{', { encoding: 'utf8', mode: 0o600 });
+		let entered = false;
+		await assert.rejects(withOwnedFileLock(lockPath, async () => {
+			entered = true;
+		}, {
+			timeoutMs: 20,
+			retryMs: 2,
+		}), /Timed out waiting for lock owner publication/u);
+		assert.equal(entered, false);
+		assert.equal(await readFile(lockPath, 'utf8'), '{');
+
+		await writeFile(lockPath, `${JSON.stringify({
+			schemaVersion: 999,
+			pid: process.pid,
+			token: '9'.repeat(32),
+			createdAt: '2000-01-01T00:00:00.000Z',
+		})}\n`, 'utf8');
+		await assert.rejects(withOwnedFileLock(lockPath, async () => {
+			entered = true;
+		}, {
+			timeoutMs: 1_000,
+			retryMs: 2,
+		}), /Lock owner schema is invalid/u);
+		assert.equal(entered, false, 'a complete invalid schema is never treated as initialization');
 	});
 });
 
