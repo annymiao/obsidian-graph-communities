@@ -25,6 +25,18 @@ if [ ! -d "$source_directory/node_modules" ]; then
 	echo "MCP runtime dependencies are missing." >&2
 	exit 1
 fi
+if [ ! -f "$source_directory/scripts/smoke-client.mjs" ]; then
+	echo "MCP smoke client is missing." >&2
+	exit 1
+fi
+if [ ! -f "$source_directory/scripts/test.mjs" ]; then
+	echo "MCP test runner is missing." >&2
+	exit 1
+fi
+if [ ! -f "$source_directory/scripts/upgrade-local.sh" ]; then
+	echo "MCP upgrade helper is missing." >&2
+	exit 1
+fi
 if [ ! -d "$vault_directory" ]; then
 	echo "Vault directory does not exist." >&2
 	exit 1
@@ -49,6 +61,12 @@ cp -R \
 	"$source_directory/package.json" \
 	"$source_directory/pnpm-lock.yaml" \
 	"$install_directory/"
+mkdir -p "$install_directory/scripts"
+cp -p \
+	"$source_directory/scripts/smoke-client.mjs" \
+	"$source_directory/scripts/test.mjs" \
+	"$source_directory/scripts/upgrade-local.sh" \
+	"$install_directory/scripts/"
 cp -R "$source_directory/skills/obsidian-knowledge" "$skill_target"
 cp -p "$config_file" "$backup_file"
 

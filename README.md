@@ -9,10 +9,12 @@ blend the node color or enter theme percentages. Structural notes are removed fr
 remaining link is drawn from its source color to its target color.
 
 The repository also contains an optional read-only knowledge gateway under [`mcp/`](mcp/). It gives AI clients a
-small, source-linked evidence pack instead of exposing the whole Vault: stable core knowledge is the default, while
-project, reference, and history corpora require an explicit retrieval mode. Version 0.7 adds opaque evidence IDs and
-verified local index generations so an unchanged Vault can be reopened without reparsing every note. The Obsidian
-plugin remains fully local and independent of this gateway.
+small, source-linked evidence pack instead of exposing a complete collection: stable core knowledge is the default,
+while project, reference, and history corpora require an explicit retrieval mode. Version 1.2 adds a conservative
+UTF-8-byte context bound, 1–16 federated local Markdown roots, verified persistent index generations, stable opaque
+evidence IDs, and a transport-aware transmission-review policy. These are retrieval foundations for model-neutral
+records such as a future `agent-memory/v1` Markdown format; the gateway does not yet validate that complete schema,
+write memories, or resolve conflicts. The Obsidian graph plugin remains fully local and independent of the gateway.
 
 ## What it does
 
@@ -134,6 +136,10 @@ The model is fully local and rule-based. It reads complete Markdown notes but do
 - Disabling or unloading the plugin restores the theme's normal node colors.
 - GitHub releases contain only `main.js`, `manifest.json`, and `styles.css`; no vault notes, generated indexes, local paths, or plugin settings are packaged.
 - The optional gateway stores rebuildable derived generations in the user's OS application-data directory by default, never inside the repository or Vault. A mode payload contains each eligible note's bounded Markdown content plus a second chunked copy, and metadata for every discovered Markdown path; treat it as sensitive local data.
+- The optional gateway can federate 1–16 explicitly configured local Markdown roots without moving their source files. It returns only policy-eligible, budget-bounded evidence with stable source/document/version/span/chunk IDs.
+- Gateway context limits are conservative UTF-8-byte upper bounds, not exact counts from a model-specific tokenizer.
+- `trusted-local` bypasses transmission review only for a trusted local STDIO process. HTTP MCP still requires review; the authenticated REST endpoints are a separate trusted-client boundary and return authorized content directly. The fail-safe MCP default is `required`.
+- Neither component automatically writes durable memories or adjudicates conflicting claims. Future `agent-memory/v1` records remain user-governed Markdown evidence until a separate reviewed write path exists.
 - See [SECURITY.md](SECURITY.md) for the release boundary and vulnerability reporting process.
 
 ## Compatibility note

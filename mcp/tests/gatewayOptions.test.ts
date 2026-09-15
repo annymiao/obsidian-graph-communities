@@ -21,6 +21,7 @@ test('gateway options retain compatibility with legacy HTTP environment names', 
 	]);
 	assert.equal(options.maxBodyBytes, 2_048);
 	assert.equal(options.rateLimitPerMinute, 321);
+	assert.equal(options.transmissionReviewMode, 'required');
 });
 
 test('canonical gateway environment names take precedence over legacy aliases', () => {
@@ -36,4 +37,19 @@ test('canonical gateway environment names take precedence over legacy aliases', 
 	assert.equal(options.apiKey, 'test-canonical-api-key-1234567890');
 	assert.equal(options.host, '127.0.0.3');
 	assert.equal(options.port, 29_123);
+});
+
+test('gateway review configuration is strict', () => {
+	const options = loadGatewayOptions({
+		OBSIDIAN_GATEWAY_API_KEY: 'test-canonical-api-key-1234567890',
+		OBSIDIAN_TRANSMISSION_REVIEW: 'trusted-local',
+	});
+	assert.equal(options.transmissionReviewMode, 'trusted-local');
+	assert.throws(
+		() => loadGatewayOptions({
+			OBSIDIAN_GATEWAY_API_KEY: 'test-canonical-api-key-1234567890',
+			OBSIDIAN_TRANSMISSION_REVIEW: 'false',
+		}),
+		/OBSIDIAN_TRANSMISSION_REVIEW must be one of/u,
+	);
 });

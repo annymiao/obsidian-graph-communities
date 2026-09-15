@@ -21,6 +21,7 @@ function configFor(vaultPath: string, overrides: Partial<ServerConfig> = {}): Se
 		chunkOverlapTokens: 20,
 		defaultContextTokens: 800,
 		maxSourceTokens: 220,
+		transmissionReviewMode: 'required',
 		...overrides,
 	};
 }
@@ -134,6 +135,33 @@ test('default, project, reference, and history modes remain strictly isolated', 
 		'default',
 	);
 	assert.equal(related.some((note) => note.path === '80-Knowledge-Index/generated.md'), false);
+});
+
+test('uppercase safety frontmatter and control directories fail closed', async (t) => {
+	const root = await syntheticVault(t);
+	await Promise.all([
+		writeSynthetic(root, '30-Shared-Knowledge/private-uppercase.md', frontmatter(
+			{ type: 'knowledge-card', status: 'active', SENSITIVITY: 'PRIVATE' },
+			'# Private\nlocaleprivatebeacon84721 must never be retrieved.',
+		)),
+		writeSynthetic(root, '30-Shared-Knowledge/safe-uppercase.md', frontmatter(
+			{ type: 'knowledge-card', status: 'active', SENSITIVITY: 'SANITIZED' },
+			'# Safe\nlocalesafebeacon84721 remains eligible.',
+		)),
+		writeSynthetic(
+			root,
+			'.GIT/control.md',
+			'# Control\nlocalecontrolbeacon84721 must never be scanned.',
+		),
+	]);
+
+	const knowledge = new KnowledgeIndex(configFor(root));
+	assert.deepEqual(await knowledge.search('localeprivatebeacon84721'), []);
+	assert.deepEqual(await knowledge.search('localecontrolbeacon84721'), []);
+	const safe = await knowledge.search('localesafebeacon84721');
+	assert.deepEqual(safe.map((match) => match.path), [
+		'30-Shared-Knowledge/safe-uppercase.md',
+	]);
 });
 
 test('a conclusion after 120k characters is searchable as a bounded chunk', async (t) => {
@@ -542,7 +570,12 @@ test('raw character and file-count ceilings fail closed', async (t) => {
 test('context assembly enforces its token budget including headers and mixed text', async (t) => {
 	const root = await syntheticVault(t);
 	await Promise.all(Array.from({ length: 8 }, async (_, index) => {
-		const mixed = `${'中文证据与边界。'.repeat(70)} ${'English evidence boundary. '.repeat(55)} 🧠`;
+		const mixed = [
+			'中文证据与边界。'.repeat(70),
+			'English evidence boundary. '.repeat(55),
+			'👩🏽‍💻'.repeat(30),
+			'e\u0301'.repeat(80),
+		].join(' ');
 		await writeSynthetic(root, `30-Shared-Knowledge/budget-${index}.md`, frontmatter(
 			{ type: 'knowledge-card', status: 'active' },
 			`# Budget source ${index}\nbudgetbeacon84721 source ${index}. ${mixed}`,
@@ -552,13 +585,13 @@ test('context assembly enforces its token budget including headers and mixed tex
 	const knowledge = new KnowledgeIndex(configFor(root));
 	const context = await knowledge.getContext('budgetbeacon84721', {
 		limit: 8,
-		maxTokens: 500,
+		maxTokens: 1_600,
 	});
 
 	assert.ok(context.sourcePaths.length > 0);
 	assert.ok(context.sourcePaths.length < 8);
 	assert.equal(new Set(context.sourcePaths).size, context.sourcePaths.length);
-	assert.ok(context.estimatedTokenCount <= 500);
+	assert.ok(context.estimatedTokenCount <= 1_600);
 	assert.equal(context.estimatedTokenCount, estimateTokens(context.markdown));
 	assert.equal(context.truncated, true);
 

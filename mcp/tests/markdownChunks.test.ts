@@ -4,7 +4,7 @@ import {
 	chunkMarkdown,
 	parseMarkdownHeadings,
 } from '../src/markdownChunks.js';
-import { estimateTokens } from '../src/tokenBudget.js';
+import { estimateTokens, truncateToTokenBudget } from '../src/tokenBudget.js';
 
 test('parses ATX headings outside code fences only', () => {
 	const lines = [
@@ -33,7 +33,7 @@ test('parses ATX headings outside code fences only', () => {
 	assert.equal(chunks.some((chunk) => chunk.heading?.includes('Untrusted')), false);
 });
 
-test('keeps long Chinese chunks inside the estimated token budget', () => {
+test('keeps long Chinese chunks inside the conservative token upper bound', () => {
 	const maximumTokens = 200;
 	const lines = ['# 中文测试', '记'.repeat(1_000)];
 	const chunks = chunkMarkdown(lines, 0, [], maximumTokens, 30);
@@ -116,8 +116,30 @@ test('advances past oversized whitespace instead of looping forever', () => {
 	assert.deepEqual(chunks.map((chunk) => chunk.content), ['有意义的正文']);
 });
 
-test('token estimates reserve headroom for dense identifiers and emoji', () => {
-	assert.ok(estimateTokens('A7f9Q2z8K4m6N1p3R5t7V9x2B4d6F8h0') >= 28);
-	assert.ok(estimateTokens('🧠'.repeat(20)) >= 50);
-	assert.ok(estimateTokens('A normal sentence keeps useful evidence density.') < 30);
+test('token budgets use the UTF-8 byte upper bound for mixed Unicode', () => {
+	const samples = [
+		'A7f9Q2z8K4m6N1p3R5t7V9x2B4d6F8h0',
+		'🧠'.repeat(20),
+		'👩🏽‍💻'.repeat(20),
+		'e\u0301'.repeat(40),
+		'中文 mixed العربية हिन्दी 🙂'.repeat(12),
+	];
+	for (const sample of samples) {
+		assert.equal(estimateTokens(sample), Buffer.byteLength(sample, 'utf8'));
+	}
+});
+
+test('Unicode truncation never exceeds its conservative hard budget', () => {
+	const value = [
+		'prefix ',
+		'👨‍👩‍👧‍👦'.repeat(30),
+		'e\u0301'.repeat(80),
+		' 中文 العربية हिन्दी ',
+		'🧠'.repeat(30),
+	].join('');
+	for (const budget of [1, 2, 3, 4, 7, 31, 64, 127, 256, 511]) {
+		const truncated = truncateToTokenBudget(value, budget);
+		assert.ok(estimateTokens(truncated) <= budget);
+		assert.equal(Buffer.from(truncated, 'utf8').toString('utf8'), truncated);
+	}
 });

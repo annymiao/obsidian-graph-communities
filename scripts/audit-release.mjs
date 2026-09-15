@@ -51,6 +51,7 @@ export function findSensitiveFinding(filename, content) {
 }
 
 export async function auditRepository() {
+  await assertNoUnstagedTrackedChanges();
   const contents = new Map(await Promise.all(
     releaseFiles.map(async (filename) => [filename, await readFile(path.join(root, filename), 'utf8')])
   ));
@@ -60,6 +61,17 @@ export async function auditRepository() {
   const mcpPackage = JSON.parse(await readFile(path.join(root, 'mcp', 'package.json'), 'utf8'));
   const mcpIndex = await readFile(path.join(root, 'mcp', 'src', 'index.ts'), 'utf8');
 
+  if (manifest.id !== 'graph-communities'
+      || manifest.name !== 'Graph Communities'
+      || manifest.author !== 'annymiao') {
+    throw new Error('Obsidian plugin identity changed unexpectedly.');
+  }
+  if (packageJson.name !== 'obsidian-graph-communities' || packageJson.author !== 'annymiao') {
+    throw new Error('Repository package identity changed unexpectedly.');
+  }
+  if (mcpPackage.name !== 'obsidian-knowledge-gateway') {
+    throw new Error('MCP package identity changed unexpectedly.');
+  }
   if (manifest.version !== packageJson.version) {
     throw new Error(`Version mismatch: manifest=${manifest.version}, package=${packageJson.version}`);
   }
@@ -105,6 +117,23 @@ export async function auditRepository() {
     `Release audit passed: ${releaseFiles.join(', ')} · version ${manifest.version} · ` +
     `${repositoryFiles.length} repository files checked · no personal paths, credentials, binary artifacts, or plugin network APIs.`
   );
+}
+
+async function assertNoUnstagedTrackedChanges() {
+  try {
+    await execFileAsync(
+      'git',
+      ['diff', '--quiet', '--no-ext-diff', '--'],
+      { cwd: root }
+    );
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 1) {
+      throw new Error(
+        'Release audit refuses unstaged tracked changes because it must inspect the exact staged bytes.'
+      );
+    }
+    throw error;
+  }
 }
 
 async function listRepositoryFiles() {

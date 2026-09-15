@@ -31,6 +31,7 @@ function persistentConfig(vaultPath: string, artifactPath: string): ServerConfig
 		chunkOverlapTokens: 80,
 		defaultContextTokens: 4_000,
 		maxSourceTokens: 900,
+		transmissionReviewMode: 'required',
 	};
 }
 
@@ -117,6 +118,7 @@ test('configuration keeps derived storage outside the Vault and can disable it',
 	});
 	assert.equal(disabled.artifactPath, null);
 	assert.equal(disabled.sourceIdentity, 'connector:stable-test-source');
+	assert.equal(disabled.transmissionReviewMode, 'required');
 
 	const enabled = await loadServerConfig({
 		OBSIDIAN_VAULT_PATH: vaultPath,
@@ -144,6 +146,14 @@ test('configuration keeps derived storage outside the Vault and can disable it',
 			OBSIDIAN_PERSIST_INDEX: 'flase',
 		}),
 		/must be true or false/u,
+	);
+	await assert.rejects(
+		loadServerConfig({
+			OBSIDIAN_VAULT_PATH: vaultPath,
+			OBSIDIAN_PERSIST_INDEX: 'false',
+			OBSIDIAN_TRANSMISSION_REVIEW: 'off',
+		}),
+		/OBSIDIAN_TRANSMISSION_REVIEW must be one of/u,
 	);
 });
 

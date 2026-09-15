@@ -1,28 +1,10 @@
 export function estimateTokens(value: string): number {
-	if (!value) return 0;
-	const segments = value.match(
-		/[A-Za-z0-9]+|[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]+|\s+|[^]/gu,
-	) ?? [];
-	let estimate = 0;
-	for (const segment of segments) {
-		if (/^[A-Za-z0-9]+$/u.test(segment)) {
-			estimate += segment.length >= 24
-				? segment.length * 0.75
-				: Math.ceil(segment.length / 4);
-			continue;
-		}
-		if (/^[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]+$/u.test(segment)) {
-			estimate += [...segment].length * 1.4;
-			continue;
-		}
-		if (/^\s+$/u.test(segment)) {
-			estimate += segment.length / 8;
-			continue;
-		}
-		const codePoint = segment.codePointAt(0) ?? 0;
-		estimate += codePoint > 0xffff ? 2.5 : codePoint > 0x7f ? 1.25 : 1;
-	}
-	return Math.ceil(estimate * 1.15);
+	// One UTF-8 byte is one conservative budget unit. Modern byte-fallback text
+	// tokenizers cannot emit more content tokens than the bytes available to
+	// encode that content, while character heuristics can badly undercount emoji
+	// sequences, combining marks, and unfamiliar scripts. This intentionally
+	// trades context density for a deterministic cross-tokenizer hard ceiling.
+	return Buffer.byteLength(value, 'utf8');
 }
 
 export function truncateToTokenBudget(value: string, maximumTokens: number): string {

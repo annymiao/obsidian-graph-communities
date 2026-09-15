@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.0 — 2026-09-15
+
+- Kept the Graph Communities plugin's existing local, read-only graph classification and visualization behavior; this release does not add automatic note or memory writeback to the plugin.
+- Updated the optional MCP gateway to use a conservative UTF-8-byte upper bound for chunks and complete evidence packs rather than presenting the budget as an exact provider-token count.
+- Added a strict catalog for 1–16 non-overlapping local Markdown roots, with separate source identities and generations, deterministic federated ranking, one global context budget, and explicit partial-source failures.
+- Added checksummed persistent generations with validated schema/config/source metadata, atomic publication, restart reuse, and fail-closed rebuilding when validation fails.
+- Added stable opaque IDs for source, document, version, span, and chunk evidence so citations remain portable without revealing absolute local paths.
+- Added `required`, `trusted-local`, and `disabled` transmission-review modes. `trusted-local` bypasses review only for local STDIO; HTTP continues to require review.
+- Strengthened retrieval-scope and frontmatter policy handling so untrusted note metadata may restrict access but cannot promote generated, sensitive, control, or historical content into the default corpus.
+- Established a read-only retrieval foundation for future model-neutral `agent-memory/v1` Markdown records. Full schema validation, automatic memory writes, semantic conflict adjudication, and user-approved forgetting are not implemented.
+
 ## 0.7.0 — 2026-09-15
 
 - Added opaque stable IDs for sources, documents, versions, spans, and chunks.

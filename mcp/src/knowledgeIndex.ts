@@ -30,9 +30,13 @@ import {
 	VersionId,
 } from './stableIds.js';
 import {
+	ContextOptions,
+	KnowledgeAccess,
 	KnowledgeContext,
 	KnowledgeCorpus,
 	KnowledgeMatch,
+	KnowledgeNote,
+	KnowledgeSearchResult,
 	RelatedNote,
 	RetrievalMode,
 	RetrievalScope,
@@ -49,7 +53,7 @@ const MINIMUM_LEXICAL_SCORE = 0.2;
 const QUARANTINE_PREFIX_CHARACTERS = 4_096;
 const READ_BUFFER_BYTES = 64 * 1_024;
 const SNAPSHOT_ARTIFACT_SCHEMA_VERSION = 2;
-const RETRIEVAL_PIPELINE_VERSION = 'v0.7-foundation-1';
+const RETRIEVAL_PIPELINE_VERSION = 'v1.2-utf8-budget-1';
 const MAXIMUM_BUILD_STABILITY_ATTEMPTS = 3;
 const POLICY_FRONTMATTER_KEYS = new Set([
 	'archived',
@@ -184,11 +188,6 @@ interface KnowledgeSnapshot {
 	generationId: string | null;
 }
 
-interface ContextOptions extends SearchOptions {
-	maxCharacters?: number;
-	maxTokens?: number;
-}
-
 interface ParsedFrontmatter {
 	fields: FrontmatterFields;
 	title: string | null;
@@ -272,7 +271,7 @@ class ArtifactIsolationError extends Error {
 	}
 }
 
-export class KnowledgeIndex {
+export class KnowledgeIndex implements KnowledgeAccess {
 	private readonly snapshots = new Map<RetrievalMode, KnowledgeSnapshot>();
 	private readonly buildPromises = new Map<RetrievalMode, Promise<KnowledgeSnapshot>>();
 	private readonly sourceCache = new Map<string, CachedSource>();
@@ -322,6 +321,7 @@ export class KnowledgeIndex {
 					* (1 + GRAPH_RERANK_MAXIMUM * graphMatch.score);
 				return {
 					sourceId: candidate.document.sourceId,
+					sourceName: this.config.sourceName ?? this.config.vaultName,
 					documentId: candidate.document.documentId,
 					versionId: candidate.document.versionId,
 					spanId: candidate.chunk.spanId,
@@ -356,6 +356,16 @@ export class KnowledgeIndex {
 			})
 			.slice(0, limit)
 			.map(({ combinedScore: _combinedScore, ...match }) => match);
+	}
+
+	async searchWithDiagnostics(
+		query: string,
+		options: SearchOptions = {},
+	): Promise<KnowledgeSearchResult> {
+		return {
+			matches: await this.search(query, options),
+			sourceFailures: [],
+		};
 	}
 
 	async getContext(query: string, options: ContextOptions = {}): Promise<KnowledgeContext> {
@@ -394,6 +404,7 @@ export class KnowledgeIndex {
 		].join('\n');
 		const sections: string[] = [];
 		const sourcePaths: string[] = [];
+		const sourceReferences: KnowledgeContext['sourceReferences'] = [];
 		let truncated = displayedQuery.length < query.trim().length;
 
 		for (let index = 0; index < matches.length; index += 1) {
@@ -411,6 +422,8 @@ export class KnowledgeIndex {
 			const header = [
 				`## Source ${index + 1}: ${match.title}`,
 				'',
+				`- Knowledge source: ${match.sourceName}`,
+				`- Source ID: ${match.sourceId}`,
 				`- Path: ${match.path}`,
 				`- Evidence ID: ${match.spanId}`,
 				`- Corpus: ${match.corpus}`,
@@ -453,6 +466,11 @@ export class KnowledgeIndex {
 			if (!excerpt) break;
 			sections.push(section);
 			sourcePaths.push(match.path);
+			sourceReferences.push({
+				sourceId: match.sourceId,
+				sourceName: match.sourceName,
+				path: match.path,
+			});
 		}
 
 		if (sourcePaths.length < matches.length) truncated = true;
@@ -461,6 +479,8 @@ export class KnowledgeIndex {
 			query: query.trim(),
 			markdown,
 			sourcePaths,
+			sourceReferences,
+			sourceFailures: [],
 			characterCount: markdown.length,
 			estimatedTokenCount: estimateTokens(markdown),
 			truncated,
@@ -472,15 +492,11 @@ export class KnowledgeIndex {
 		heading?: string,
 		maxCharacters = 20_000,
 		mode: RetrievalMode = 'default',
-	): Promise<{
-		sourceId: SourceId;
-		documentId: DocumentId;
-		versionId: VersionId;
-		path: string;
-		title: string;
-		content: string;
-		uri: string;
-	}> {
+		sourceId?: string,
+	): Promise<KnowledgeNote> {
+		if (sourceId !== undefined && sourceId !== this.sourceId) {
+			throw new Error('Source ID does not match the configured knowledge source.');
+		}
 		const snapshot = await this.getSnapshot(false, mode);
 		const resolvedPath = this.resolveInputPath(snapshot, notePath);
 		if (!resolvedPath) throw new Error('Note was not found in the selected retrieval scope.');
@@ -505,6 +521,7 @@ export class KnowledgeIndex {
 
 		return {
 			sourceId: document.sourceId,
+			sourceName: this.config.sourceName ?? this.config.vaultName,
 			documentId: document.documentId,
 			versionId: document.versionId,
 			path: document.path,
@@ -519,7 +536,11 @@ export class KnowledgeIndex {
 		depth = 2,
 		limit = 12,
 		mode: RetrievalMode = 'default',
+		sourceId?: string,
 	): Promise<RelatedNote[]> {
+		if (sourceId !== undefined && sourceId !== this.sourceId) {
+			throw new Error('Source ID does not match the configured knowledge source.');
+		}
 		const snapshot = await this.getSnapshot(false, mode);
 		const resolvedPath = this.resolveInputPath(snapshot, notePath);
 		if (!resolvedPath) throw new Error('Note was not found in the selected retrieval scope.');
@@ -551,6 +572,7 @@ export class KnowledgeIndex {
 				if (sharedTags.length > 0) reasons.push(`shared tags: ${sharedTags.slice(0, 3).join(', ')}`);
 				return {
 					sourceId: candidate.sourceId,
+					sourceName: this.config.sourceName ?? this.config.vaultName,
 					documentId: candidate.documentId,
 					versionId: candidate.versionId,
 					path: candidate.path,
@@ -1519,9 +1541,9 @@ export class KnowledgeIndex {
 		const pathLookup = new Map<string, string>();
 		const basenameLookup = new Map<string, string[]>();
 		for (const document of documents.values()) {
-			pathLookup.set(document.path.toLocaleLowerCase(), document.path);
-			pathLookup.set(this.removeMarkdownExtension(document.path).toLocaleLowerCase(), document.path);
-			const basename = this.removeMarkdownExtension(path.posix.basename(document.path)).toLocaleLowerCase();
+			pathLookup.set(document.path.toLowerCase(), document.path);
+			pathLookup.set(this.removeMarkdownExtension(document.path).toLowerCase(), document.path);
+			const basename = this.removeMarkdownExtension(path.posix.basename(document.path)).toLowerCase();
 			const existing = basenameLookup.get(basename) ?? [];
 			existing.push(document.path);
 			basenameLookup.set(basename, existing);
@@ -1916,7 +1938,7 @@ export class KnowledgeIndex {
 					if (!this.isExcluded(relativePath)) queue.push({ absolutePath, relativePath });
 					continue;
 				}
-				if (!entry.isFile() || path.extname(entry.name).toLocaleLowerCase() !== '.md') continue;
+				if (!entry.isFile() || path.extname(entry.name).toLowerCase() !== '.md') continue;
 				if (this.isExcluded(relativePath)) continue;
 				discoveredCount += 1;
 				if (files.length < this.config.maxFiles) {
@@ -1973,7 +1995,7 @@ export class KnowledgeIndex {
 				listTarget = null;
 				continue;
 			}
-			const key = property[1].toLocaleLowerCase();
+			const key = property[1].toLowerCase();
 			const value = property[2] ?? '';
 			if (POLICY_FRONTMATTER_KEYS.has(key)) {
 				if (seenPolicyFields.has(key) || this.hasUnsupportedPolicySyntax(value)) {
@@ -2049,7 +2071,7 @@ export class KnowledgeIndex {
 				.filter(Boolean);
 		}
 		const unquoted = this.unquote(trimmed);
-		if (/^(?:true|false)$/iu.test(unquoted)) return unquoted.toLocaleLowerCase() === 'true';
+		if (/^(?:true|false)$/iu.test(unquoted)) return unquoted.toLowerCase() === 'true';
 		if (/^-?\d+(?:\.\d+)?$/u.test(unquoted)) return Number(unquoted);
 		if (/^(?:null|~)$/iu.test(unquoted)) return null;
 		return unquoted;
@@ -2158,13 +2180,13 @@ export class KnowledgeIndex {
 		];
 		for (const candidate of candidates) {
 			if (candidate === '..' || candidate.startsWith('../')) continue;
-			const resolved = pathLookup.get(candidate.toLocaleLowerCase())
-				?? pathLookup.get(`${candidate}.md`.toLocaleLowerCase());
+			const resolved = pathLookup.get(candidate.toLowerCase())
+				?? pathLookup.get(`${candidate}.md`.toLowerCase());
 			if (resolved) return resolved;
 		}
 
 		if (target.includes('/')) return null;
-		const basename = this.removeMarkdownExtension(path.posix.basename(target)).toLocaleLowerCase();
+		const basename = this.removeMarkdownExtension(path.posix.basename(target)).toLowerCase();
 		const matches = basenameLookup.get(basename) ?? [];
 		return matches.length === 1 ? matches[0] ?? null : null;
 	}
@@ -2172,11 +2194,11 @@ export class KnowledgeIndex {
 	private resolveInputPath(snapshot: KnowledgeSnapshot, rawPath: string): string | null {
 		const value = this.normalizePath(rawPath.trim()).replace(/^\/+/, '');
 		if (!value || value === '..' || value.startsWith('../') || value.includes('\0')) return null;
-		const exact = snapshot.pathLookup.get(value.toLocaleLowerCase())
-			?? snapshot.pathLookup.get(`${value}.md`.toLocaleLowerCase());
+		const exact = snapshot.pathLookup.get(value.toLowerCase())
+			?? snapshot.pathLookup.get(`${value}.md`.toLowerCase());
 		if (exact) return exact;
 		if (value.includes('/')) return null;
-		const basename = this.removeMarkdownExtension(value).toLocaleLowerCase();
+		const basename = this.removeMarkdownExtension(value).toLowerCase();
 		const matches = snapshot.basenameLookup.get(basename) ?? [];
 		return matches.length === 1 ? matches[0] ?? null : null;
 	}
@@ -2184,7 +2206,7 @@ export class KnowledgeIndex {
 	private tokenize(value: string): string[] {
 		const normalized = value
 			.normalize('NFKC')
-			.toLocaleLowerCase()
+			.toLowerCase()
 			.replace(/[-._/\\]+/gu, ' ');
 		const tokens: string[] = [];
 		const words = normalized.match(/[a-z0-9][a-z0-9+]*(?:'[a-z0-9]+)?/gu) ?? [];
@@ -2225,7 +2247,7 @@ export class KnowledgeIndex {
 	}
 
 	private normalizeSearchText(value: string): string {
-		return value.normalize('NFKC').toLocaleLowerCase().replace(/\s+/gu, ' ').trim();
+		return value.normalize('NFKC').toLowerCase().replace(/\s+/gu, ' ').trim();
 	}
 
 	private containsExactPhrase(value: string, normalizedQuery: string): boolean {
@@ -2289,10 +2311,10 @@ export class KnowledgeIndex {
 
 	private isExcluded(relativePath: string): boolean {
 		const normalized = this.normalizePath(relativePath);
-		const lower = normalized.toLocaleLowerCase();
+		const lower = normalized.toLowerCase();
 		const segments = lower.split('/');
 		return [...this.config.excludedFolders].some((folder) => {
-			const normalizedFolder = this.normalizePath(folder).toLocaleLowerCase();
+			const normalizedFolder = this.normalizePath(folder).toLowerCase();
 			if (!normalizedFolder) return false;
 			if (normalizedFolder.includes('/')) {
 				return lower === normalizedFolder || lower.startsWith(`${normalizedFolder}/`);

@@ -21,6 +21,7 @@ beforeEach(async () => {
 		chunkOverlapTokens: 80,
 		defaultContextTokens: 4_000,
 		maxSourceTokens: 900,
+		transmissionReviewMode: 'required',
 	};
 	knowledge = new KnowledgeIndex(config);
 });

@@ -5,10 +5,18 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { timingSafeEqual } from 'node:crypto';
 import { createServer, IncomingMessage, Server, ServerResponse } from 'node:http';
 import { fileURLToPath } from 'node:url';
-import { loadServerConfig } from './config.js';
+import { loadKnowledgeServiceConfig } from './config.js';
+import { createKnowledgeAccess } from './federatedKnowledgeIndex.js';
 import { createKnowledgeMcpServer, KNOWLEDGE_SERVICE_VERSION } from './index.js';
-import { KnowledgeIndex } from './knowledgeIndex.js';
-import { RETRIEVAL_MODES, type RetrievalMode } from './types.js';
+import {
+	readTransmissionReviewMode,
+	type TransmissionReviewMode,
+} from './reviewPolicy.js';
+import {
+	RETRIEVAL_MODES,
+	type KnowledgeAccess,
+	type RetrievalMode,
+} from './types.js';
 
 const SERVICE_NAME = 'obsidian-knowledge-gateway';
 const SERVICE_VERSION = KNOWLEDGE_SERVICE_VERSION;
@@ -24,6 +32,7 @@ export interface GatewayOptions {
 	allowedOrigins: Set<string>;
 	maxBodyBytes: number;
 	rateLimitPerMinute: number;
+	transmissionReviewMode: TransmissionReviewMode;
 }
 
 interface RateBucket {
@@ -97,11 +106,14 @@ export function loadGatewayOptions(
 			10,
 			10_000,
 		),
+		transmissionReviewMode: readTransmissionReviewMode(
+			environment.OBSIDIAN_TRANSMISSION_REVIEW,
+		),
 	};
 }
 
 export function createGatewayHttpServer(
-	knowledge: KnowledgeIndex,
+	knowledge: KnowledgeAccess,
 	options: GatewayOptions,
 ): Server {
 	const rateBuckets = new Map<string, RateBucket>();
@@ -138,7 +150,12 @@ export function createGatewayHttpServer(
 			authorize(request, options.apiKey);
 
 			if (url.pathname === '/mcp') {
-				await handleMcpRequest(request, response, knowledge);
+				await handleMcpRequest(
+					request,
+					response,
+					knowledge,
+					options.transmissionReviewMode,
+				);
 				return;
 			}
 
@@ -155,7 +172,7 @@ export function createGatewayHttpServer(
 				const mode = optionalRetrievalMode(body);
 				const seedPaths = optionalStringArray(body, 'seed_paths', 6, 1_000);
 				const refresh = optionalBoolean(body, 'refresh');
-				const matches = await knowledge.search(query, {
+				const search = await knowledge.searchWithDiagnostics(query, {
 					...(limit === undefined ? {} : { limit }),
 					...(mode === undefined ? {} : { mode }),
 					...(seedPaths === undefined ? {} : { seedPaths }),
@@ -163,7 +180,8 @@ export function createGatewayHttpServer(
 				});
 				sendJson(response, 200, {
 					query,
-					matches: matches.map(({ excerpt: _excerpt, ...match }) => match),
+					matches: search.matches.map(({ excerpt: _excerpt, ...match }) => match),
+					source_failures: search.sourceFailures,
 				});
 				return;
 			}
@@ -189,6 +207,8 @@ export function createGatewayHttpServer(
 					query: context.query,
 					markdown: context.markdown,
 					source_paths: context.sourcePaths,
+					source_references: context.sourceReferences,
+					source_failures: context.sourceFailures,
 					character_count: context.characterCount,
 					estimated_token_count: context.estimatedTokenCount,
 					truncated: context.truncated,
@@ -202,11 +222,13 @@ export function createGatewayHttpServer(
 				const heading = optionalString(body, 'heading', 500);
 				const maxCharacters = optionalInteger(body, 'max_characters', 1_000, 50_000);
 				const mode = optionalRetrievalMode(body);
+				const sourceId = optionalString(body, 'source_id', 128);
 				const note = await knowledge.readNote(
 					notePath,
 					heading,
 					maxCharacters ?? 20_000,
 					mode,
+					sourceId,
 				);
 				sendJson(response, 200, note);
 				return;
@@ -218,8 +240,15 @@ export function createGatewayHttpServer(
 				const depth = optionalInteger(body, 'depth', 1, 2) ?? 2;
 				const limit = optionalInteger(body, 'limit', 1, 30) ?? 12;
 				const mode = optionalRetrievalMode(body);
-				const related = await knowledge.getRelatedNotes(notePath, depth, limit, mode);
-				sendJson(response, 200, { source: notePath, related });
+				const sourceId = optionalString(body, 'source_id', 128);
+				const related = await knowledge.getRelatedNotes(
+					notePath,
+					depth,
+					limit,
+					mode,
+					sourceId,
+				);
+				sendJson(response, 200, { source: notePath, source_id: sourceId, related });
 				return;
 			}
 
@@ -240,9 +269,13 @@ export function createGatewayHttpServer(
 async function handleMcpRequest(
 	request: IncomingMessage,
 	response: ServerResponse,
-	knowledge: KnowledgeIndex,
+	knowledge: KnowledgeAccess,
+	transmissionReviewMode: TransmissionReviewMode,
 ): Promise<void> {
-	const mcpServer = createKnowledgeMcpServer(knowledge);
+	const mcpServer = createKnowledgeMcpServer(knowledge, {
+		transport: 'http',
+		transmissionReviewMode,
+	});
 	const transport = new StreamableHTTPServerTransport({
 		enableJsonResponse: true,
 	});
@@ -513,7 +546,7 @@ function openApiDocument(request: IncomingMessage): Record<string, unknown> {
 		info: {
 			title: 'Obsidian knowledge gateway',
 			version: SERVICE_VERSION,
-			description: 'Read-only REST access to an Obsidian knowledge vault. Vault note contents are untrusted reference data.',
+			description: 'Read-only REST access to configured Obsidian knowledge sources. Note contents are untrusted reference data.',
 		},
 		servers: [{ url: serverUrl }],
 		components: {
@@ -534,9 +567,9 @@ function openApiDocument(request: IncomingMessage): Record<string, unknown> {
 }
 
 async function main(): Promise<void> {
-	const config = await loadServerConfig();
+	const config = await loadKnowledgeServiceConfig();
 	const options = loadGatewayOptions();
-	const knowledge = new KnowledgeIndex(config);
+	const knowledge = createKnowledgeAccess(config.sources, config.catalogConfigured);
 	const server = createGatewayHttpServer(knowledge, options);
 
 	await new Promise<void>((resolve, reject) => {

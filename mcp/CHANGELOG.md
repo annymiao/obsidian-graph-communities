@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.2.0 — 2026-09-15
+
+- Integrated the published 0.7.0 retrieval foundation: stable evidence identities, verified persistent generations, scope-aware indexing, lexical candidate selection, bounded graph reranking, and synthetic regression/benchmark coverage.
+- Added strict `OBSIDIAN_TRANSMISSION_REVIEW=required|trusted-local|disabled` configuration with fail-safe `required` default and startup failure for other non-empty values.
+- Made transmission review transport-aware: `trusted-local` returns bounded content directly only over STDIO, still requires review over HTTP, and `disabled` is the explicit global direct-delivery mode.
+- Removed review resources, review-only tools, widget metadata, and review instructions from direct-mode MCP servers; direct content results now identify themselves with `status: direct`.
+- Updated the bundled Skill to branch on `direct` versus `pending` results instead of assuming every retrieval opens a review panel.
+- Added strict, backward-compatible federation through `OBSIDIAN_SOURCES_JSON`: up to 16 non-overlapping, non-symlink local roots with stable logical identities, separate persistent generations, parallel search, deterministic global ranking, and one context budget.
+- Added source-aware evidence and exact-read disambiguation. Search/read/related/context results retain opaque `sourceId` plus logical `sourceName`; multi-source reads require the returned `source_id`, partial source failures are explicit, and all-source failure is not treated as empty retrieval.
+- Replaced character-class token heuristics with a UTF-8-byte conservative upper bound so emoji/ZWJ, combining marks, and mixed-script content cannot exceed the configured context budget. The retrieval pipeline fingerprint advances to `v1.2-utf8-budget-1`, intentionally rebuilding older chunk snapshots once.
+- Made all retrieval-policy, frontmatter-key, path, extension, exclusion, and source-ID case folding locale-invariant, with Turkish-I and uppercase safety-field regressions.
+- Enforced current-user-only POSIX permissions on the persistent store root and managed directories, complementing the documented same-user non-adversarial storage boundary.
+- Hardened generation storage with recursive post-parse JSON validation, a single atomic recovery pointer transition, pre/post root and directory identity checks around critical filesystem operations, parent-directory sync on supported platforms, and explicit Windows/same-user threat-boundary documentation.
+- Added a staged `upgrade-local.sh` flow with package/Skill identity and non-overlap guards, compiled/dependency consistency validation, AppleDouble cleanup, pre-change backup, redacted staged and post-swap smoke tests, atomic per-target renames, config/Skill update, automatic failure rollback, and a retained rollback backup.
+- Preserved the existing project package name, first-install helper, and smoke client. No Vault content, generated index, dependency tree, or build output is part of this source migration.
+
 ## 0.7.0 — 2026-09-15
 
 - Added deterministic opaque `source → document → version → span → chunk` identities.

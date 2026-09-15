@@ -24,6 +24,10 @@ GitHub releases are allowlisted to exactly three installable files:
 
 Vault notes, `.obsidian` settings, local paths, generated indexes, caches, environment files, credentials, and test outputs are excluded. The optional `mcp/` directory contains source code, documentation, and synthetic tests only. `npm run verify` rebuilds both components, scans tracked text files, runs the release audit, and executes both test suites before publication.
 
+AppleDouble metadata (`._*`, `.AppleDouble/`) and local AI/editor tool state such as `.agents/`, `.codex/`, `.cursor/`, and `.vscode/` are ignored repository-wide. Do not force-add them: they can contain local paths, instructions, caches, or machine-specific state.
+
+The optional MCP gateway has a separate runtime boundary. Its derived generations can contain eligible Markdown text and must be treated as sensitive local data. `trusted-local` disables review only for a trusted STDIO caller; it does not make HTTP local or trusted. The gateway is read-only and does not implement automatic durable-memory writes or conflict resolution.
+
 ## Reporting a vulnerability
 
 Please report security issues privately through GitHub's **Security → Report a vulnerability** flow. Do not include real Vault notes, credentials, or other sensitive content in a public issue.

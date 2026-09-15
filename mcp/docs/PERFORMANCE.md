@@ -102,3 +102,35 @@ least:
 Performance is not valid if it is achieved by returning the wrong note, leaking an ineligible
 scope, skipping provenance, or silently truncating an incomplete Vault. The synthetic validation
 block is only a basic guard; the gateway's retrieval and security test suites remain authoritative.
+
+## Real-Vault five-second acceptance
+
+The synthetic harness cannot establish the product requirement for an unchanged real Vault. A
+release may claim that requirement only after a private, local acceptance run on the supported
+hardware and representative Vault; the Vault, query text, expected-note paths, and generated index
+must remain outside Git and release artifacts.
+
+Use a completed first build as setup, then freeze the Vault for the measurement window and run a
+representative mix of exact-name, paraphrase, long-tail, cross-note, and deliberate no-hit queries.
+Measure from MCP request start through the complete direct response, using
+`OBSIDIAN_TRANSMISSION_REVIEW=trusted-local` over STDIO so human review time is not mistaken for
+retrieval latency. Record only aggregate durations and pass/fail counts in any shareable report;
+keep the private expected-source manifest local. The acceptance gate is:
+
+1. every unchanged-Vault measured request completes within 5,000 ms, not only the median;
+2. every expected source remains eligible in the requested mode and appears within the agreed top-k;
+3. deliberate no-hit queries abstain, restricted modes never leak, and returned evidence retains stable IDs and source links; and
+4. the overview reports no incomplete scan, unreadable file, unexpected truncation, or degraded persistence.
+
+Run enough repetitions to include cold process reopen and warm in-process reuse separately. If the
+full metadata validation scan prevents the limit on the supported maximum Vault, the result is a
+failed acceptance test and should drive the planned watcher/change-journal work; it must not be
+hidden by narrowing the corpus, skipping authorization checks, or reporting only percentiles.
+
+For a federated installation, the acceptance corpus must use the actual configured source count and
+largest supported combination of source metadata. Per-source searches run concurrently, but every
+source still performs its own unchanged-state validation and the global merge/context packing adds
+work after the slowest successful source. Measure partial-failure and all-failure cases separately;
+the five-second result is invalid if a slow source is silently dropped. Accuracy expectations must
+include same-relative-path cases and verify that the returned opaque `sourceId` selects the intended
+logical source for follow-up reads.

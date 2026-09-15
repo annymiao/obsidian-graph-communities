@@ -35,6 +35,8 @@ test('stdio server exposes a private MCP App review flow without a review bypass
 
 	try {
 		await client.connect(transport);
+		assert.match(client.getInstructions() ?? '', /review panel/u);
+		assert.ok(client.getServerCapabilities()?.resources);
 		const tools = await client.listTools();
 		assert.deepEqual(
 			tools.tools.map((tool) => tool.name).sort(),
@@ -169,6 +171,142 @@ test('stdio server exposes a private MCP App review flow without a review bypass
 		}
 	} finally {
 		await client.close();
+	}
+});
+
+test('stdio trusted-local mode returns bounded content without review UI metadata', async () => {
+	const serverPath = fileURLToPath(new URL('../src/index.js', import.meta.url));
+	const transport = new StdioClientTransport({
+		command: process.execPath,
+		args: [serverPath],
+		env: {
+			...process.env,
+			OBSIDIAN_VAULT_PATH: vaultPath,
+			OBSIDIAN_PERSIST_INDEX: 'false',
+			OBSIDIAN_TRANSMISSION_REVIEW: 'trusted-local',
+		},
+	});
+	const client = new Client(
+		{ name: 'obsidian-knowledge-direct-test', version: '1.2.0' },
+		{ capabilities: {} },
+	);
+
+	try {
+		await client.connect(transport);
+		assert.doesNotMatch(
+			client.getInstructions() ?? '',
+			/review panel|receive_reviewed_transmission|审核/iu,
+		);
+		assert.equal(client.getServerCapabilities()?.resources, undefined);
+		const tools = await client.listTools();
+		assert.deepEqual(
+			tools.tools.map((tool) => tool.name).sort(),
+			[
+				'get_knowledge_context',
+				'get_related_notes',
+				'get_vault_overview',
+				'read_note',
+				'search_knowledge',
+			],
+		);
+		for (const toolName of [
+			'get_knowledge_context',
+			'search_knowledge',
+			'read_note',
+			'get_related_notes',
+		]) {
+			const tool = tools.tools.find((candidate) => candidate.name === toolName);
+			assert.ok(tool);
+			assert.equal(tool._meta?.['openai/outputTemplate'], undefined);
+			assert.equal(tool._meta?.ui, undefined);
+		}
+
+		const direct = await client.callTool({
+			name: 'get_knowledge_context',
+			arguments: { query: 'Codex writing system', limit: 1, max_tokens: 500 },
+		});
+		assert.ok(isRecord(direct));
+		assert.ok(isRecord(direct.structuredContent));
+		assert.equal(direct.structuredContent.status, 'direct');
+		assert.equal('review_id' in direct.structuredContent, false);
+		assert.ok(Array.isArray(direct.content));
+		const first = direct.content[0];
+		assert.ok(isRecord(first));
+		assert.equal(first.type, 'text');
+		assert.match(String(first.text), /# Obsidian knowledge context/u);
+		assert.equal(
+			isRecord(direct._meta) && 'obsidianReview' in direct._meta,
+			false,
+		);
+	} finally {
+		await client.close();
+	}
+});
+
+test('stdio federation exposes source IDs and requires one for ambiguous relative paths', async () => {
+	const secondVaultPath = await createFixtureVault();
+	const serverPath = fileURLToPath(new URL('../src/index.js', import.meta.url));
+	const environment: Record<string, string> = Object.fromEntries(
+		Object.entries(process.env).filter((entry): entry is [string, string] => {
+			return typeof entry[1] === 'string';
+		}),
+	);
+	delete environment.OBSIDIAN_VAULT_PATH;
+	environment.OBSIDIAN_SOURCES_JSON = JSON.stringify([
+		{ id: 'fixture:first', name: 'First library', path: vaultPath },
+		{ id: 'fixture:second', name: 'Second library', path: secondVaultPath },
+	]);
+	environment.OBSIDIAN_PERSIST_INDEX = 'false';
+	environment.OBSIDIAN_TRANSMISSION_REVIEW = 'trusted-local';
+	const transport = new StdioClientTransport({
+		command: process.execPath,
+		args: [serverPath],
+		env: environment,
+	});
+	const client = new Client(
+		{ name: 'obsidian-knowledge-federation-test', version: '1.2.0' },
+		{ capabilities: {} },
+	);
+
+	try {
+		await client.connect(transport);
+		const searched = await client.callTool({
+			name: 'search_knowledge',
+			arguments: { query: 'Codex writing system', limit: 4 },
+		});
+		assert.ok(isRecord(searched));
+		assert.ok(Array.isArray(searched.content));
+		const textBlock = searched.content[0];
+		assert.ok(isRecord(textBlock) && typeof textBlock.text === 'string');
+		const payload = JSON.parse(textBlock.text) as {
+			matches: Array<{ sourceId: string; sourceName: string; path: string }>;
+		};
+		assert.ok(payload.matches.length >= 2);
+		assert.deepEqual(
+			new Set(payload.matches.map((match) => match.sourceName)),
+			new Set(['First library', 'Second library']),
+		);
+		assert.equal(JSON.stringify(searched).includes(vaultPath), false);
+		assert.equal(JSON.stringify(searched).includes(secondVaultPath), false);
+
+		const selected = payload.matches[0];
+		assert.ok(selected);
+		const ambiguous = await client.callTool({
+			name: 'read_note',
+			arguments: { path: selected.path },
+		});
+		assert.equal(ambiguous.isError, true);
+		assert.match(JSON.stringify(ambiguous.content), /source_id is required/u);
+
+		const read = await client.callTool({
+			name: 'read_note',
+			arguments: { path: selected.path, source_id: selected.sourceId },
+		});
+		assert.equal(read.isError, undefined);
+		assert.match(JSON.stringify(read.content), new RegExp(selected.sourceName, 'u'));
+	} finally {
+		await client.close();
+		await removeFixtureVault(secondVaultPath);
 	}
 });
 

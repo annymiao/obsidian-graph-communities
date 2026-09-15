@@ -1,10 +1,120 @@
 import { homedir } from 'node:os';
-import { realpath, stat } from 'node:fs/promises';
+import { lstat, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { readTransmissionReviewMode } from './reviewPolicy.js';
 import { createSourceId } from './stableIds.js';
 import { ServerConfig } from './types.js';
 
 const DEFAULT_EXCLUDED_FOLDERS = ['.git', '.obsidian', '.trash', 'node_modules'];
+const MAXIMUM_KNOWLEDGE_SOURCES = 16;
+const SOURCE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
+
+export interface KnowledgeServiceConfig {
+	sources: ServerConfig[];
+	/** True when sources came from the explicit logical-source catalog. */
+	catalogConfigured: boolean;
+	transmissionReviewMode: ServerConfig['transmissionReviewMode'];
+}
+
+interface ConfiguredKnowledgeSource {
+	id: string;
+	name: string;
+	path: string;
+}
+
+export async function loadKnowledgeServiceConfig(
+	environment: NodeJS.ProcessEnv = process.env,
+): Promise<KnowledgeServiceConfig> {
+	if (environment.OBSIDIAN_SOURCES_JSON === undefined) {
+		const source = await loadServerConfig(environment);
+		return {
+			sources: [source],
+			catalogConfigured: false,
+			transmissionReviewMode: source.transmissionReviewMode,
+		};
+	}
+	if (environment.OBSIDIAN_VAULT_PATH?.trim()) {
+		throw new Error('OBSIDIAN_SOURCES_JSON and OBSIDIAN_VAULT_PATH cannot be used together.');
+	}
+	if (environment.OBSIDIAN_SOURCE_IDENTITY?.trim()) {
+		throw new Error('OBSIDIAN_SOURCE_IDENTITY must be set per source through OBSIDIAN_SOURCES_JSON.id.');
+	}
+
+	const configuredSources = parseConfiguredSources(environment.OBSIDIAN_SOURCES_JSON);
+	const resolvedRoots = await Promise.all(configuredSources.map(async (source) => {
+		if (!path.isAbsolute(source.path)) {
+			throw new Error(`Knowledge source "${source.name}" must use an absolute path.`);
+		}
+		const configuredRoot = path.resolve(source.path);
+		if (configuredRoot === path.parse(configuredRoot).root) {
+			throw new Error(`Knowledge source "${source.name}" cannot use a filesystem root.`);
+		}
+		try {
+			const configuredRootStats = await lstat(configuredRoot);
+			if (configuredRootStats.isSymbolicLink()) {
+				throw new Error(`Knowledge source "${source.name}" cannot use a symbolic-link root.`);
+			}
+			if (!configuredRootStats.isDirectory()) {
+				throw new Error(`Knowledge source "${source.name}" must point to a directory.`);
+			}
+			return await realpath(configuredRoot);
+		} catch (error) {
+			if (error instanceof Error && error.message.startsWith('Knowledge source "')) throw error;
+			throw new Error(`Knowledge source "${source.name}" path is unavailable.`);
+		}
+	}));
+
+	for (let first = 0; first < resolvedRoots.length; first += 1) {
+		for (let second = first + 1; second < resolvedRoots.length; second += 1) {
+			const firstRoot = resolvedRoots[first];
+			const secondRoot = resolvedRoots[second];
+			if (!firstRoot || !secondRoot || !pathsOverlap(firstRoot, secondRoot)) continue;
+			throw new Error(
+				`Knowledge source roots cannot overlap: "${configuredSources[first]?.name}" and "${configuredSources[second]?.name}".`,
+			);
+		}
+	}
+
+	const persistenceEnabled = readBoolean(environment.OBSIDIAN_PERSIST_INDEX, true);
+	const configuredArtifactRoot = persistenceEnabled && environment.OBSIDIAN_ARTIFACT_PATH?.trim()
+		? await canonicalizePotentialPath(path.resolve(environment.OBSIDIAN_ARTIFACT_PATH.trim()))
+		: null;
+	if (configuredArtifactRoot) {
+		for (let index = 0; index < resolvedRoots.length; index += 1) {
+			const sourceRoot = resolvedRoots[index];
+			if (sourceRoot && pathsOverlap(sourceRoot, configuredArtifactRoot)) {
+				throw new Error(
+					`Persistent index root cannot overlap knowledge source "${configuredSources[index]?.name}".`,
+				);
+			}
+		}
+	}
+
+	const sources = await Promise.all(configuredSources.map(async (source, index) => {
+		const sourceEnvironment: NodeJS.ProcessEnv = { ...environment };
+		delete sourceEnvironment.OBSIDIAN_SOURCES_JSON;
+		sourceEnvironment.OBSIDIAN_VAULT_PATH = resolvedRoots[index];
+		sourceEnvironment.OBSIDIAN_SOURCE_IDENTITY = source.id;
+		if (configuredArtifactRoot) {
+			sourceEnvironment.OBSIDIAN_ARTIFACT_PATH = path.join(
+				configuredArtifactRoot,
+				createSourceId(source.id),
+			);
+		} else {
+			delete sourceEnvironment.OBSIDIAN_ARTIFACT_PATH;
+		}
+		const loaded = await loadServerConfig(sourceEnvironment);
+		return { ...loaded, sourceName: source.name };
+	}));
+
+	return {
+		sources,
+		catalogConfigured: true,
+		transmissionReviewMode: readTransmissionReviewMode(
+			environment.OBSIDIAN_TRANSMISSION_REVIEW,
+		),
+	};
+}
 
 export async function loadServerConfig(
 	environment: NodeJS.ProcessEnv = process.env,
@@ -54,6 +164,7 @@ export async function loadServerConfig(
 	return {
 		vaultPath,
 		vaultName: path.basename(vaultPath),
+		sourceName: path.basename(vaultPath),
 		sourceIdentity,
 		artifactPath,
 		excludedFolders,
@@ -89,7 +200,70 @@ export async function loadServerConfig(
 			200,
 			4_000,
 		),
+		transmissionReviewMode: readTransmissionReviewMode(
+			environment.OBSIDIAN_TRANSMISSION_REVIEW,
+		),
 	};
+}
+
+function parseConfiguredSources(raw: string): ConfiguredKnowledgeSource[] {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch {
+		throw new Error('OBSIDIAN_SOURCES_JSON must be a valid JSON array.');
+	}
+	if (!Array.isArray(parsed) || parsed.length === 0 || parsed.length > MAXIMUM_KNOWLEDGE_SOURCES) {
+		throw new Error(`OBSIDIAN_SOURCES_JSON must contain 1 to ${MAXIMUM_KNOWLEDGE_SOURCES} sources.`);
+	}
+
+	const seenIds = new Set<string>();
+	return parsed.map((value, index) => {
+		if (!isRecord(value)) {
+			throw new Error(`OBSIDIAN_SOURCES_JSON item ${index + 1} must be an object.`);
+		}
+		const keys = Object.keys(value).sort();
+		if (keys.length !== 3 || keys[0] !== 'id' || keys[1] !== 'name' || keys[2] !== 'path') {
+			throw new Error(`OBSIDIAN_SOURCES_JSON item ${index + 1} must contain only id, name, and path.`);
+		}
+		const id = strictSourceString(value.id, 'id', index, 128);
+		const name = strictSourceString(value.name, 'name', index, 160);
+		const sourcePath = strictSourceString(value.path, 'path', index, 4_096);
+		if (!SOURCE_ID_PATTERN.test(id)) {
+			throw new Error(`OBSIDIAN_SOURCES_JSON item ${index + 1} has an invalid id.`);
+		}
+		if (/\p{Cc}/u.test(name)) {
+			throw new Error(`OBSIDIAN_SOURCES_JSON item ${index + 1} has an invalid name.`);
+		}
+		const comparableId = id.toLowerCase();
+		if (seenIds.has(comparableId)) {
+			throw new Error(`OBSIDIAN_SOURCES_JSON contains a duplicate source id: ${id}.`);
+		}
+		seenIds.add(comparableId);
+		return { id, name, path: sourcePath };
+	});
+}
+
+function strictSourceString(
+	value: unknown,
+	field: string,
+	index: number,
+	maximumLength: number,
+): string {
+	if (
+		typeof value !== 'string'
+		|| value.length === 0
+		|| value.length > maximumLength
+		|| value !== value.trim()
+		|| value.includes('\0')
+	) {
+		throw new Error(`OBSIDIAN_SOURCES_JSON item ${index + 1} has an invalid ${field}.`);
+	}
+	return value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 async function resolveArtifactPath(
@@ -148,7 +322,7 @@ function pathsOverlap(first: string, second: string): boolean {
 
 function readBoolean(value: string | undefined, fallback: boolean): boolean {
 	if (!value?.trim()) return fallback;
-	const normalized = value.trim().toLocaleLowerCase();
+	const normalized = value.trim().toLowerCase();
 	if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
 	if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
 	throw new Error('OBSIDIAN_PERSIST_INDEX must be true or false.');

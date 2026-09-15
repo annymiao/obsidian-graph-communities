@@ -10,50 +10,67 @@ The design deliberately does **not** copy human forgetting as a storage rule. Hu
 - let importance, recency, task relevance, confidence, and user confirmation affect recall;
 - make summaries and associations reversible derived views, never replacements for source evidence.
 
+## Component boundary
+
+This repository contains two independent components:
+
+- **Graph Communities plugin:** local, read-only classification and visualization inside Obsidian. It reads notes to color and focus the graph, does not persist a knowledge index, and never creates, edits, moves, or deletes notes.
+- **Optional MCP gateway:** local-first, policy-scoped retrieval that returns small evidence packs to an AI client. Its derived index is rebuildable and sensitive, but the original Markdown remains authoritative.
+
+Version 1.2 does not add memory writeback to either component. It also does not automatically merge identities, decide which conflicting claim is true, or delete/forget source evidence.
+
 ## Ordered delivery
 
 ### Phase 1 — bounded, accurate retrieval
 
-Status: implemented in version 0.6.0.
+Status: implemented in the optional MCP gateway; real-collection acceptance testing remains necessary.
 
 - Isolate stable core, active project, reference, history, control, and generated corpora.
-- Default to core; require an explicit request for one broader corpus.
-- Chunk long Markdown by structure and rank it with lexical evidence.
-- Let the graph rerank evidence but never invent a result.
-- Deduplicate exact bodies, abstain when evidence is missing, and enforce a complete context token budget.
-- Keep every result traceable to a source span.
+- Default to core; require an explicit retrieval mode for one broader corpus.
+- Chunk Markdown by structure and rank lexical candidates with BM25-style scoring.
+- Let eligible links and metadata rerank textual evidence within a fixed bound; never create graph-only evidence.
+- Deduplicate exact bodies, abstain when evidence is missing, and keep every result traceable to source/document/version/span/chunk IDs.
+- Bound chunks and the complete evidence pack with conservative UTF-8-byte units. This is a safety upper bound, not an exact tokenizer count.
+- Publish verified index generations through `staging → READY → CURRENT`; validate their schema, pipeline/config fingerprint, checksums, stable IDs, and current source metadata before reuse.
+- Keep derived generations outside the Markdown roots and Git by default; rebuild or fail closed instead of serving an unverified partial index.
 
-### Phase 1.5 — reusable local retrieval runtime
-
-Status: implemented as the version 0.7.0 foundation; real-Vault scale acceptance is still pending.
-
-- Give every source, document, version, span, and chunk a deterministic opaque ID.
-- Build an inverted lexical candidate index so unchanged queries avoid reading and scoring every document body; v0.7 still scans every file's metadata before reuse for authorization safety.
-- Store sensitive derived artifacts locally outside the Vault and Git by default.
-- Publish immutable checksummed generations through `staging → READY → CURRENT`, keep retrieval snapshots current-only after successful cleanup, and never expose a partial build.
-- Reuse a stored generation only after its schema, pipeline/config fingerprint, IDs, checksum chain, and current source metadata pass validation.
-- Keep persistence optional and make the ordinary user path require no database administration.
-- Measure first build, in-process reuse, reopened-generation reuse, p50/p95/p99, accuracy checks, and five-second violations with a deterministic synthetic benchmark.
-
-This phase does **not** yet claim the five-second product target for every real Vault. The next performance step is a fixed acceptance corpus on minimum supported hardware, followed by a file watcher/change journal and incremental compilation. Embeddings and automatic writeback remain deliberately outside this foundation.
+The target for repeated retrieval without source changes remains under five seconds, but v1.2 does not claim that result for every real collection or machine. The next acceptance step is a fixed, privacy-safe corpus on minimum supported hardware, measuring first build, in-process reuse, reopened-generation reuse, p50/p95/p99, accuracy, and five-second violations.
 
 ### Phase 2 — distributed source organization
 
-Status: planned, not implemented.
+Status: local filesystem federation is implemented; broader source management is not.
 
-- Add read-only source adapters and a catalog for material stored outside one Vault.
-- Reuse the v0.7 stable source-ID contract, then add a multi-source catalog with content hashes, locations, connector identity, access policy, and last-seen state.
-- Keep source files where they are; store only portable metadata and rebuildable derived views.
-- Require human confirmation for ambiguous identity merges, ownership, access changes, moves, and deletion.
+- Configure 1–16 explicit, non-overlapping local Markdown roots with stable logical source identities.
+- Keep each source in place and give it a separate verified generation; merge ranked results deterministically under one global context budget.
+- Require a returned `sourceId` for ambiguous exact reads and report unavailable sources explicitly rather than silently treating them as empty.
+- Preserve the old single-root environment contract for simple local use.
+
+Still planned:
+
+- runtime add/remove UI and a user-readable source catalog;
+- filesystem watcher/change journal and incremental per-file compilation;
+- non-filesystem connectors and portable access-policy adapters;
+- reviewed workflows for ambiguous identity merges, ownership/access changes, moves, and deletion.
 
 ### Phase 3 — cross-model memory
 
-Status: long-term goal, not implemented.
+Status: protocol and retrieval foundation only; durable-memory automation is not implemented.
 
-- Define a model-neutral memory exchange format for claims, decisions, preferences, events, open loops, and evidence links.
-- Separate observed evidence, model inference, and user-confirmed facts.
-- Attach scope, sensitivity, confidence, time, provenance, and supersession to every durable memory.
-- Allow any model to read the same approved evidence pack without inheriting another model's hidden state.
-- Use human review for durable personal facts, high-impact merges, sharing, and forgetting decisions.
+The proposed `agent-memory/v1` format should represent claims, decisions, preferences, events, open loops, and evidence links as model-neutral Markdown/frontmatter. If those records are placed in an approved local source, v1.2 can already index and return their Markdown under the same corpus, sensitivity, provenance, stable-ID, and context-budget rules. This is a **read foundation**, not full `agent-memory/v1` conformance: the gateway does not yet validate every schema field or provide a memory-specific query engine.
+
+Later work must:
+
+- distinguish observed evidence, model inference, and user-confirmed facts;
+- attach scope, sensitivity, confidence, time, provenance, and supersession to every durable record;
+- support explicit provider/model-neutral import and export without inheriting hidden model state;
+- propose associations and duplicates algorithmically while preserving the evidence that produced them;
+- route durable personal facts, high-impact merges, sharing/access changes, conflicts, and forgetting decisions to human review;
+- apply approved changes through a separate, auditable write service with preview, rollback, and idempotency.
+
+## What can be automated and what needs confirmation
+
+Safe read-only automation can extract structure, build lexical indexes, identify exact duplicates, propose related evidence, rank candidates, detect stale generations, and assemble bounded source-linked context. These operations are reversible because they only change derived state.
+
+Human confirmation remains necessary before changing durable meaning or authority: creating a long-lived personal memory, merging uncertain identities, accepting an inferred preference as fact, resolving conflicting evidence, widening access, moving or deleting source files, or forgetting/superseding a user-confirmed record.
 
 The target architecture is not “a database that remembers everything equally.” It is a retained evidence base plus an adaptive attention system: broad storage, selective retrieval, explicit uncertainty, and user-governed durable memory.

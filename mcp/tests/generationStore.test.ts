@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import {
+	chmod,
 	lstat,
 	mkdir,
 	mkdtemp,
@@ -234,6 +235,35 @@ test('recovery keeps the verified PREVIOUS anchor until CURRENT is valid again',
 	});
 });
 
+test('a crash immediately before recovery CURRENT switch preserves PREVIOUS', async () => {
+	class CrashBeforeRecoverySwitchStore extends GenerationStore {
+		protected override async beforeRecoveryCurrentSwitch(): Promise<void> {
+			throw new Error('simulated process stop before CURRENT switch');
+		}
+	}
+
+	await withStoreRoot(async (root) => {
+		const publisher = new GenerationStore(root);
+		await publisher.publish({ version: 1 });
+		const second = await publisher.publish({ version: 2 });
+		await publisher.publish({ version: 3 });
+		const previousBefore = await readFile(path.join(root, 'PREVIOUS'));
+		await writeFile(path.join(root, 'CURRENT'), '{not-json', 'utf8');
+
+		const crashingRecovery = new CrashBeforeRecoverySwitchStore(root);
+		await assert.rejects(
+			crashingRecovery.rollback(),
+			/simulated process stop/u,
+		);
+		assert.deepEqual(await readFile(path.join(root, 'PREVIOUS')), previousBefore);
+		assert.equal(await readFile(path.join(root, 'CURRENT'), 'utf8'), '{not-json');
+
+		const reopened = new GenerationStore(root);
+		const recovered = await reopened.rollback();
+		assert.equal(recovered.manifest.generationId, second.generationId);
+	});
+});
+
 test('refuses manifest and READY corruption', async () => {
 	await withStoreRoot(async (root) => {
 		const store = new GenerationStore(root);
@@ -302,6 +332,22 @@ test('rejects a symlink used as the configured store root', async (context) => {
 	}
 });
 
+test('rejects a POSIX store root accessible to group or other users', async (context) => {
+	if (process.platform === 'win32') {
+		context.skip('POSIX permission bits are not authoritative on Windows.');
+		return;
+	}
+	await withStoreRoot(async (root) => {
+		await chmod(root, 0o750);
+		const store = new GenerationStore(root);
+		await assert.rejects(
+			store.initialize(),
+			/must not grant group or other filesystem permissions/u,
+		);
+		await chmod(root, 0o700);
+	});
+});
+
 test('rejects non-JSON values and configured payload overflows', async () => {
 	await withStoreRoot(async (root) => {
 		const store = new GenerationStore(root, { maxPayloadBytes: 4 });
@@ -310,7 +356,65 @@ test('rejects non-JSON values and configured payload overflows', async () => {
 			store.publish({ bad: Number.NaN } as unknown as never),
 			/only JSON values/,
 		);
+		await assert.rejects(
+			store.publish({ nested: [{ bad: Number.POSITIVE_INFINITY }] } as unknown as never),
+			/only JSON values/,
+		);
+		await assert.rejects(
+			store.publish({ nested: new Date() } as unknown as never),
+			/plain objects/,
+		);
 	});
+});
+
+test('detects managed-directory replacement after initialization', async () => {
+	await withStoreRoot(async (root) => {
+		const store = new GenerationStore(root);
+		await store.initialize();
+		const generations = path.join(root, 'generations');
+		await rename(generations, `${generations}.displaced`);
+		await mkdir(generations, { mode: 0o700 });
+		await assert.rejects(
+			store.readCurrent(),
+			/generations changed after initialization/u,
+		);
+	});
+});
+
+test('detects an ancestor replaced by a symlink before returning data', async (context) => {
+	const parent = await createStoreRoot();
+	try {
+		const container = path.join(parent, 'container');
+		const root = path.join(container, 'store');
+		await mkdir(container, { mode: 0o700 });
+		await mkdir(root, { mode: 0o700 });
+		const store = new GenerationStore(root);
+		await store.publish({ safe: true });
+
+		const displaced = path.join(parent, 'container-displaced');
+		const attacker = path.join(parent, 'attacker');
+		await rename(container, displaced);
+		await mkdir(attacker, { mode: 0o700 });
+		await mkdir(path.join(attacker, 'store'), { mode: 0o700 });
+		await mkdir(path.join(attacker, 'store', 'generations'), { mode: 0o700 });
+		await mkdir(path.join(attacker, 'store', '.staging'), { mode: 0o700 });
+		try {
+			await symlink(attacker, container, 'dir');
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === 'EPERM') {
+				context.skip('Creating symlinks is not permitted on this platform.');
+				return;
+			}
+			throw error;
+		}
+
+		await assert.rejects(
+			store.readCurrent(),
+			/changed after initialization|unexpected symlink/u,
+		);
+	} finally {
+		await rm(parent, { recursive: true, force: true });
+	}
 });
 
 test('rejects a checksummed JSON payload that decodes outside JsonValue', async () => {
