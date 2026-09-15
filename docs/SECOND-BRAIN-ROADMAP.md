@@ -1,123 +1,89 @@
 # Second-brain roadmap
 
-The long-term goal is a user-owned knowledge layer that can serve different AI models without making any model's private conversation history the source of truth.
+The long-term goal is a user-owned knowledge layer that different AI models can share without treating any model's private conversation history as the source of truth.
 
-The design deliberately does **not** copy human forgetting as a storage rule. Human memory is useful as an attention metaphor, but AI has a different advantage: it can retain more evidence and revisit it cheaply. Therefore:
+The design does not copy human forgetting as a deletion rule. Human memory is useful as an attention metaphor, while AI's advantage is retaining more attributable evidence and revisiting it cheaply. The system therefore keeps original material until the user explicitly changes it, adjusts recall rather than existence, preserves provenance and time, and treats summaries and associations as reversible derived views.
 
-- keep original material unless the user explicitly deletes it;
-- reduce retrieval probability, not existence;
-- preserve provenance and time so old evidence can be re-evaluated;
-- let importance, recency, task relevance, confidence, and user confirmation affect recall;
-- make summaries and associations reversible derived views, never replacements for source evidence.
+## Version 1.3: five-layer engineering loop
 
-## Component boundary
-
-This repository contains two independent components:
-
-- **Graph Communities plugin:** local, read-only classification and visualization inside Obsidian. It reads notes to color and focus the graph, does not persist a knowledge index, and never creates, edits, moves, or deletes notes.
-- **Optional MCP gateway:** local-first, policy-scoped retrieval that returns small evidence packs to an AI client. Its derived index is rebuildable and sensitive, but the original Markdown remains authoritative.
-
-Version 1.2 does not add memory writeback to either component. It also does not automatically merge identities, decide which conflicting claim is true, or delete/forget source evidence.
-
-## Target five-plane architecture and the v1.2 gap
-
-The production target is a five-plane system. Version 1.2 implements the verified lexical retrieval foundation, not every box in that target. In the tree below, `[done]` means an executable end-to-end path, `[partial]` means the capability exists without the intended separation or reusable contract, and `[planned]` means there is no production implementation yet.
+Version 1.3 implements the complete framework path below with synthetic data. Real private-corpus relevance and the Obsidian desktop approval experience remain acceptance work outside the repository.
 
 ```text
 Obsidian second brain
-├── Offline compilation plane [partial: still runs inside the request-serving process]
-│   ├── [done] safe discovery, policy scan, content/config/pipeline hashes
-│   ├── [done] Markdown parsing, heading chunks, exact-body deduplication
-│   ├── [done] inverted lexical candidates, BM25, metadata and link structures
-│   ├── [planned] vector/ANN index
-│   ├── [partial] time and hierarchy metadata, without dedicated indexes
-│   ├── [partial] complete-generation crash recovery, without per-file checkpoints
-│   └── [done] checksummed staging -> READY -> atomic CURRENT publication
+├── Offline compilation [implemented]
+│   ├── bounded safety scan + source/policy/content hashes
+│   ├── strict Markdown parsing, heading chunks, authorization-domain deduplication
+│   ├── Catalog + Lexical + Vector + Temporal + Hierarchy + Derived artifacts
+│   ├── per-file checkpoints, bounded journal, and final source rescan
+│   └── checksummed staging -> READY -> atomic CURRENT
 │
-├── Local persistence plane [partial: one sensitive snapshot per source and mode]
-│   ├── [partial] strict configured source catalog, without a durable catalog/UI/journal
-│   ├── [partial] lexical statistics persisted; in-memory postings rebuilt on reopen
-│   ├── [planned] vector index
-│   ├── [partial] monolithic derived payload containing content, chunks and metadata
-│   ├── [done] immutable READY generations
-│   └── [done] atomic CURRENT pointer
+├── Local persistence [implemented]
+│   ├── immutable generations for each source
+│   ├── compact lexical base/deltas and precomputed vector contract
+│   ├── cross-layer semantic validation, not checksum-only validation
+│   └── atomic runtime catalog pinning each source generation + manifest hash
 │
-├── Online query plane [partial: lexical retrieval is complete; hybrid retrieval is not]
-│   ├── [partial] corpus/scope modes, without per-project authorization IDs
-│   ├── [partial] parallel per-source BM25/metadata, without dense retrieval
-│   ├── [partial] bounded graph reranking, without RRF or a pluggable reranker
-│   ├── [partial] ingestion deduplication and extractive chunk packing
-│   └── [partial] traceable evidence or safe abstention; real-corpus five-second acceptance pending
+├── Online query [implemented]
+│   ├── server-owned Source / Project / Mode / Path ACL
+│   ├── parallel BM25 / Dense / Metadata / Temporal / Hierarchy recall
+│   ├── RRF, optional fixed-loopback reranker, visibility recheck
+│   └── near-deduplication + extractive compression -> Evidence Pack / safe refusal
 │
-├── Controlled write plane [planned in this repository]
-│   ├── correction proposals with sources and a structured before/after diff
-│   ├── risk policy and human approval token
-│   ├── isolated writer adapters with compare-and-swap preconditions
-│   ├── append-only audit, receipts and rollback
-│   └── commit -> reingest -> new evidence-version receipt
+├── Controlled writes [implemented for explicitly writable ordinary directories]
+│   ├── source/version-bound proposal + structured Diff + risk
+│   ├── private exact human review + internal one-time approval
+│   ├── isolated CAS writer + atomic replace
+│   ├── hash-chain audit + recovery-aware receipt + reviewed rollback
+│   └── commit/rollback -> reingest -> publish pin -> runtime reload
 │
-└── Reusable interfaces [partial]
-    ├── [done] local Markdown-directory read source
-    ├── [done] MCP and authenticated local REST read APIs
-    ├── [planned] versioned Obsidian/source adapter contract
-    ├── [planned] embedding and reranker adapters
-    └── [partial] model-neutral reads; no cross-client controlled-write contract
+└── Reusable interfaces [implemented]
+    ├── Obsidian Vault and ordinary-directory read sources
+    ├── safe directory writer and injectable Obsidian writer contract
+    ├── offline CLI/watch, bound-principal Runtime read API, MCP, read-only HTTP
+    ├── deterministic/fixed-loopback Embedding and optional Reranker adapters
+    └── provider-neutral Evidence Pack and controlled-write protocol
 ```
 
-The sequencing consequence is important. First make large collections cheap and resumable with a content-hash catalog, change journal/checkpoints, compact lexical postings, per-document recompilation, and a shared artifact specification. A private evaluation track may test optional local embeddings, metadata/time/hierarchy retrievers, RRF, and rerankers in parallel, but none should become the default unless it improves labeled retrieval while preserving scope isolation, traceability, privacy, and the latency target. Source-management UI and additional read adapters follow the stable compiler boundary. Controlled writes come last: no MCP or REST write API should exist until proposal hashes, structured diffs, approval tokens, writer isolation, audit/rollback, and verified reingestion form one closed protocol.
+The default installed MCP surface is read-only. Mutation tools are not registered unless an operator explicitly opts into `trusted-mcp-app` and the host can keep app-only tools and resource metadata away from the model. That opt-in is a deployment trust assertion, not cryptographic proof of user presence. HTTP remains read-only.
 
-## Ordered delivery
+## Ordering and parallelism
 
-### Phase 1 — bounded, accurate retrieval
+The offline publication chain is strictly ordered:
 
-Status: implemented in the optional MCP gateway; real-collection acceptance testing remains necessary.
+```text
+trusted source configuration
+-> scan and hash
+-> parse, chunk, deduplicate
+-> build and validate every artifact layer
+-> final source rescan
+-> READY
+-> per-source CURRENT
+-> atomic multi-source runtime catalog
+-> runtime reload
+```
 
-- Isolate stable core, active project, reference, history, control, and generated corpora.
-- Default to core; require an explicit retrieval mode for one broader corpus.
-- Chunk Markdown by structure and rank lexical candidates with BM25-style scoring.
-- Let eligible links and metadata rerank textual evidence within a fixed bound; never create graph-only evidence.
-- Deduplicate exact bodies, abstain when evidence is missing, and keep every result traceable to source/document/version/span/chunk IDs.
-- Bound chunks and the complete evidence pack with conservative UTF-8-byte units. This is a safety upper bound, not an exact tokenizer count.
-- Publish verified index generations through `staging → READY → CURRENT`; validate their schema, pipeline/config fingerprint, checksums, stable IDs, and current source metadata before reuse.
-- Keep derived generations outside the Markdown roots and Git by default; rebuild or fail closed instead of serving an unverified partial index.
+One source failing never publishes a mixed multi-source catalog. The catalog pins each source by generation ID and manifest hash, so one source advancing its own `CURRENT` cannot silently change an older online snapshot.
 
-The target for repeated retrieval without source changes remains under five seconds, but v1.2 does not claim that result for every real collection or machine. The next acceptance step is a fixed, privacy-safe corpus on minimum supported hardware, measuring first build, in-process reuse, reopened-generation reuse, p50/p95/p99, accuracy, and five-second violations.
+Within a query, five retrieval channels run in parallel over the same already-authorized records. RRF, optional reranking, a second visibility check, deduplication, diversity, and compression then run in order. No-source, no-evidence, source-failure, and deadline outcomes fail closed. The runtime caps a query at five seconds; third-party synchronous code that blocks the Node.js event loop is outside that cooperative guarantee and must run in an isolated worker/process.
 
-### Phase 2 — distributed source organization
+## User operation and human decisions
 
-Status: local filesystem federation is implemented; broader source management is not.
+Normal use should require only:
 
-- Configure 1–16 explicit, non-overlapping local Markdown roots with stable logical source identities.
-- Keep each source in place and give it a separate verified generation; merge ranked results deterministically under one global context budget.
-- Require a returned `sourceId` for ambiguous exact reads and report unavailable sources explicitly rather than silently treating them as empty.
-- Preserve the old single-root environment contract for simple local use.
+1. Add one or more sources and run the first offline compilation. It may take a long time.
+2. Ask questions. With no new files, the online path uses the validated in-memory generation view rather than rereading the folders.
+3. If a trusted local host proposes a source change, inspect source, relative path, operation, risk, and full Diff; approve or cancel. Rollback requires a fresh review.
 
-Still planned:
+Algorithms may scan, hash, chunk, index, retrieve, rank, compress, identify exact duplicates, and propose associations or corrections. Trusted configuration or a human must decide source/project access, writable scope, which conflicting claim is true, the final durable content, deletion, and rollback.
 
-- runtime add/remove UI and a user-readable source catalog;
-- filesystem watcher/change journal and incremental per-file compilation;
-- non-filesystem connectors and portable access-policy adapters;
-- reviewed workflows for ambiguous identity merges, ownership/access changes, moves, and deletion.
+## How this addresses the three goals
 
-### Phase 3 — cross-model memory
+- **Large folders and token use:** corpus size moves into resumable offline compilation. A model receives only a bounded, source-linked Evidence Pack.
+- **Long-lived files in different places:** up to 16 roots remain in place while a private catalog presents one authorized search surface with stable logical IDs.
+- **Memory across models:** evidence, versions, provenance, and reviewed writes live outside model conversation state and use provider-neutral interfaces.
 
-Status: protocol and retrieval foundation only; durable-memory automation is not implemented.
+## Acceptance still required
 
-The proposed `agent-memory/v1` format should represent claims, decisions, preferences, events, open loops, and evidence links as model-neutral Markdown/frontmatter. If those records are placed in an approved local source, v1.2 can already index and return their Markdown under the same corpus, sensitivity, provenance, stable-ID, and context-budget rules. This is a **read foundation**, not full `agent-memory/v1` conformance: the gateway does not yet validate every schema field or provide a memory-specific query engine.
+The framework is complete, but synthetic tests do not prove relevance on a private collection. Before calling it production-validated, test a repository-external gold set for Recall@k/nDCG, safe refusal, language mix, stale/conflicting evidence, project isolation, disconnected sources, and warm-query latency on the target machine. Then validate the injectable writer and private approval panel in a real Obsidian desktop host, including unsaved edits, sync conflicts, failure recovery, and rollback.
 
-Later work must:
-
-- distinguish observed evidence, model inference, and user-confirmed facts;
-- attach scope, sensitivity, confidence, time, provenance, and supersession to every durable record;
-- support explicit provider/model-neutral import and export without inheriting hidden model state;
-- propose associations and duplicates algorithmically while preserving the evidence that produced them;
-- route durable personal facts, high-impact merges, sharing/access changes, conflicts, and forgetting decisions to human review;
-- apply approved changes through a separate, auditable write service with preview, rollback, and idempotency.
-
-## What can be automated and what needs confirmation
-
-Safe read-only automation can extract structure, build lexical indexes, identify exact duplicates, propose related evidence, rank candidates, detect stale generations, and assemble bounded source-linked context. These operations are reversible because they only change derived state.
-
-Human confirmation remains necessary before changing durable meaning or authority: creating a long-lived personal memory, merging uncertain identities, accepting an inferred preference as fact, resolving conflicting evidence, widening access, moving or deleting source files, or forgetting/superseding a user-confirmed record.
-
-The target architecture is not “a database that remembers everything equally.” It is a retained evidence base plus an adaptive attention system: broad storage, selective retrieval, explicit uncertainty, and user-governed durable memory.
+Detailed implementation and trust boundaries are documented in [`mcp/docs/FIVE_LAYER_ARCHITECTURE.md`](../mcp/docs/FIVE_LAYER_ARCHITECTURE.md), [`mcp/SECURITY.md`](../mcp/SECURITY.md), and [`docs/PRODUCT_ARCHITECTURE_1.3.md`](PRODUCT_ARCHITECTURE_1.3.md).

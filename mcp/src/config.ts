@@ -20,6 +20,9 @@ interface ConfiguredKnowledgeSource {
 	id: string;
 	name: string;
 	path: string;
+	kind: 'directory' | 'obsidian-vault';
+	projectId?: string;
+	writable: boolean;
 }
 
 export async function loadKnowledgeServiceConfig(
@@ -104,7 +107,13 @@ export async function loadKnowledgeServiceConfig(
 			delete sourceEnvironment.OBSIDIAN_ARTIFACT_PATH;
 		}
 		const loaded = await loadServerConfig(sourceEnvironment);
-		return { ...loaded, sourceName: source.name };
+		return {
+			...loaded,
+			sourceName: source.name,
+			sourceKind: source.kind,
+			writable: source.writable,
+			...(source.projectId === undefined ? {} : { projectId: source.projectId }),
+		};
 	}));
 
 	return {
@@ -222,15 +231,34 @@ function parseConfiguredSources(raw: string): ConfiguredKnowledgeSource[] {
 		if (!isRecord(value)) {
 			throw new Error(`OBSIDIAN_SOURCES_JSON item ${index + 1} must be an object.`);
 		}
-		const keys = Object.keys(value).sort();
-		if (keys.length !== 3 || keys[0] !== 'id' || keys[1] !== 'name' || keys[2] !== 'path') {
-			throw new Error(`OBSIDIAN_SOURCES_JSON item ${index + 1} must contain only id, name, and path.`);
+		const supportedKeys = new Set(['id', 'kind', 'name', 'path', 'project_id', 'writable']);
+		const keys = Object.keys(value);
+		if (keys.some((key) => !supportedKeys.has(key))) {
+			throw new Error(
+				`OBSIDIAN_SOURCES_JSON item ${index + 1} contains an unsupported field.`,
+			);
 		}
 		const id = strictSourceString(value.id, 'id', index, 128);
 		const name = strictSourceString(value.name, 'name', index, 160);
 		const sourcePath = strictSourceString(value.path, 'path', index, 4_096);
+		const projectId = value.project_id === undefined
+			? undefined
+			: strictSourceString(value.project_id, 'project_id', index, 128);
+		const kind = value.kind === undefined ? 'directory' : value.kind;
+		if (kind !== 'directory' && kind !== 'obsidian-vault') {
+			throw new Error(
+				`OBSIDIAN_SOURCES_JSON item ${index + 1} kind must be directory or obsidian-vault.`,
+			);
+		}
+		const writable = value.writable ?? false;
+		if (typeof writable !== 'boolean') {
+			throw new Error(`OBSIDIAN_SOURCES_JSON item ${index + 1} writable must be boolean.`);
+		}
 		if (!SOURCE_ID_PATTERN.test(id)) {
 			throw new Error(`OBSIDIAN_SOURCES_JSON item ${index + 1} has an invalid id.`);
+		}
+		if (projectId !== undefined && !SOURCE_ID_PATTERN.test(projectId)) {
+			throw new Error(`OBSIDIAN_SOURCES_JSON item ${index + 1} has an invalid project_id.`);
 		}
 		if (/\p{Cc}/u.test(name)) {
 			throw new Error(`OBSIDIAN_SOURCES_JSON item ${index + 1} has an invalid name.`);
@@ -240,7 +268,14 @@ function parseConfiguredSources(raw: string): ConfiguredKnowledgeSource[] {
 			throw new Error(`OBSIDIAN_SOURCES_JSON contains a duplicate source id: ${id}.`);
 		}
 		seenIds.add(comparableId);
-		return { id, name, path: sourcePath };
+		return {
+			id,
+			name,
+			path: sourcePath,
+			kind,
+			writable,
+			...(projectId === undefined ? {} : { projectId }),
+		};
 	});
 }
 

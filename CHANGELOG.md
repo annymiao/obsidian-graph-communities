@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.3.0 — 2026-09-15
+
+- Added the complete compiled second-brain framework while preserving the existing Graph Communities plugin identity and its local, read-only behavior.
+- Added a resumable offline compiler with bounded source scanning, strict Markdown/frontmatter parsing, heading chunks, authorization-domain deduplication, per-file checkpoints, a compactable journal, final source rescan, and atomic publication.
+- Added checksummed Catalog, compact Lexical, Vector, Derived, Temporal, and Hierarchy layers with deep cross-layer validation, immutable `READY` generations, per-source `CURRENT`, and an atomic multi-source runtime catalog that pins generation IDs and manifest hashes.
+- Added artifact-only online queries with server-owned Source/Project/Mode/Path permissions, parallel BM25/Dense/Metadata/Temporal/Hierarchy recall, RRF, optional fixed-loopback reranking, visibility rechecks, near-duplicate suppression, extractive compression, attributable Evidence Packs, and safe refusal under a five-second deadline.
+- Added provider-neutral controlled writes for explicitly writable ordinary directories: source/version-bound proposals, structured diffs, deterministic risk, private exact human review, one-time approval, CAS/atomic publication, recovery-aware receipts, hash-chain audit, resumable one-time rollback, reingestion, catalog pin update, and runtime reload.
+- Made the compiled second-brain MCP and read-only HTTP service the default package entry points; retained the 1.2 request-time services only under explicit `legacy` names. MCP mutation tools remain absent by default and require a trusted host opt-in.
+- Added reusable Vault/directory read adapters, safe directory and injectable Obsidian writer contracts, a bound-principal Runtime read facade, fixed-loopback embedding/reranker adapters, offline CLI/watch, MCP, and authenticated local HTTP.
+- Strengthened the release privacy gate to inspect the complete Git candidate and reject personal knowledge paths, runtime catalogs/generations/write state, credentials, local absolute paths, symlinks, binary data, and oversized files. Tests continue to use only synthetic temporary Markdown.
+
 ## 1.2.0 — 2026-09-15
 
 - Kept the Graph Communities plugin's existing local, read-only graph classification and visualization behavior; this release does not add automatic note or memory writeback to the plugin.

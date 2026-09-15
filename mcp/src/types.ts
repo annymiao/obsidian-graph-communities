@@ -14,6 +14,12 @@ export interface ServerConfig {
 	sourceName?: string;
 	/** Stable logical connector identity. Defaults to the canonical Vault path. */
 	sourceIdentity?: string;
+	/** Trusted project identity from local configuration, never from note frontmatter. */
+	projectId?: string;
+	/** Declared adapter kind. Ordinary Markdown directories remain the default. */
+	sourceKind?: 'directory' | 'obsidian-vault';
+	/** Explicit local authorization for controlled writes. Defaults to false. */
+	writable?: boolean;
 	/** Local derived-artifact root. Null/undefined keeps the index memory-only. */
 	artifactPath?: string | null;
 	excludedFolders: Set<string>;

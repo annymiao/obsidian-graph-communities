@@ -7,12 +7,12 @@ Graph Communities 会把 Obsidian 的黑白关系图谱变成一张按知识点�
 次要主题只保留为关系、搜索和悬停上下文，不混入节点颜色，也不参与主题占比。
 结构性文件不进入可见图谱；剩余连线按源节点颜色到目标节点颜色绘制。
 
-仓库的 [`mcp/`](mcp/) 目录还包含一个可选的只读知识网关。它不会把整个资料集合交给 AI，而是返回
-带来源、受预算约束的小型证据包：默认只检索稳定核心知识；项目、参考资料和历史语料必须显式选择。
-1.2 版增加保守的 UTF-8 字节上下文上限、1–16 个本地 Markdown 来源、经过校验的持久索引代次、稳定的
-不透明证据 ID，以及按传输方式区分的发送审核策略。这些能力可作为未来 `agent-memory/v1` Markdown
-记录的跨模型读取基础，但当前网关不会校验完整协议、自动写入记忆或裁决冲突。Obsidian 图谱插件仍然
-完全本地运行，也不依赖这个网关。
+仓库的 [`mcp/`](mcp/) 目录还包含一个可选的编译式第二大脑服务。1.3 将可恢复的慢速离线编译与有
+响应要求的在线查询分开，持久化带校验和的 Catalog、Lexical、Vector、Temporal、Hierarchy 和
+Derived 产物，并原子固定完整多来源 generation 集合。服务器权限先于 BM25 / Dense / Metadata /
+Temporal / Hierarchy 并行召回，最终只返回带来源的小型 Evidence Pack 或安全拒答。普通目录可使用
+受控写入协议，但 MCP 写工具默认不注册，HTTP 始终只读。Obsidian 图谱插件本身仍完全本地、只读，
+也不依赖这个服务。
 
 ## 主要功能
 
@@ -133,11 +133,11 @@ pnpm test
 - 插件设置使用 Obsidian 标准插件数据机制保存。
 - 禁用或卸载插件后，会恢复主题原本的节点颜色。
 - GitHub Release 只包含 `main.js`、`manifest.json` 和 `styles.css`，不会打包 Vault 笔记、生成索引、本地路径或插件设置。
-- 可选知识网关默认把可重建的派生代次放在系统应用数据目录，不放入仓库或 Vault。每个模式的载荷会保存可检索笔记在单文件上限内的 Markdown 正文及一份分块副本，并记录所有已发现 Markdown 的相对路径元数据；应按敏感本地数据保护。
-- 可选网关可以联合检索 1–16 个显式配置的本地 Markdown 根目录，不移动原始文件；只返回通过策略判定、受统一预算限制且带稳定来源/文档/版本/片段/分块 ID 的证据。
-- 网关预算采用保守的 UTF-8 字节上限，不是特定模型 tokenizer 的精确 token 数。
-- `trusted-local` 只允许受信任的本地 STDIO 进程跳过发送审核。HTTP MCP 仍需审核；带认证的 REST 端点属于独立的可信客户端边界，会直接返回已授权内容。MCP 的安全默认值为 `required`。
-- 两个组件都不会自动写入长期记忆或裁决冲突。未来 `agent-memory/v1` 记录在独立的审核写入链路实现前，仍只是由用户治理的 Markdown 证据。
+- 可选服务把可重建 generation 与写入运行状态放在来源目录和 Git 之外；其中可能含完整分块、路径、向量、Diff、审计与回滚材料，必须按敏感本地数据保护。
+- 它可编译 1–16 个显式配置的本地 Markdown 根目录，不移动原始文件；原子 runtime catalog 固定每个来源的 generation 与 manifest Hash，避免单个来源提前更新形成混合快照。
+- 查询只能收窄服务器创建的 Source / Project / Mode / Path Principal；五路召回使用同一可见集合，再融合、去重并抽取压缩。
+- MCP 写入默认关闭。启用 `trusted-mcp-app` 表示部署方保证 app-only 工具和私有元数据不会交给模型；这是宿主信任边界，不是密码学用户在场证明。HTTP 没有写路由。
+- 算法可以提出关联与校对建议；来源/项目权限、冲突真伪、最终长期内容、删除和撤销仍由受信配置或人工决定。
 - 发布边界和漏洞报告方式见 [SECURITY.md](SECURITY.md)。
 
 ## 兼容性说明
@@ -159,7 +159,7 @@ npm run verify
 node scripts/vault-smoke.mjs /path/to/vault
 ```
 
-第二大脑的分阶段路线见 [`docs/SECOND-BRAIN-ROADMAP.md`](docs/SECOND-BRAIN-ROADMAP.md)：先解决检索边界，再处理分散来源，最后建设跨模型记忆。
+第二大脑 1.3 的五层完成状态、先后/平行关系与剩余私有验收见 [`docs/SECOND-BRAIN-ROADMAP.md`](docs/SECOND-BRAIN-ROADMAP.md)。
 
 ## 许可证
 

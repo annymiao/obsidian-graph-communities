@@ -2,36 +2,62 @@ import { execFile } from 'node:child_process';
 import { lstat, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
+import { TextDecoder, promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const releaseFiles = ['main.js', 'manifest.json', 'styles.css'];
+const releaseFiles = Object.freeze(['main.js', 'manifest.json', 'styles.css']);
+const requiredContractFiles = Object.freeze([
+  ...releaseFiles,
+  'package.json',
+  'versions.json',
+  'mcp/package.json',
+  'mcp/src/index.ts',
+]);
 const maximumSourceBytes = 5_000_000;
+const utf8Decoder = new TextDecoder('utf-8', { fatal: true });
+
 const forbiddenArtifactExtensions = new Set([
   '.7z', '.docx', '.gz', '.pages', '.pdf', '.pptx', '.rar', '.tar', '.xlsx', '.zip',
 ]);
-const forbiddenKnowledgePath = /(?:^|\/)(?:attachments|backups?|notes|obsidian vault|vault)(?:\/|$)/iu;
+const forbiddenCredentialExtensions = new Set(['.key', '.p12', '.pem', '.pfx', '.private']);
+const forbiddenKnowledgePath = /(?:^|\/)(?:\.obsidian|attachments|backups?|notes|obsidian vault|vault)(?:\/|$)/iu;
+const forbiddenRuntimeSegment = /^(?:\.second-brain(?:-v1)?|second-brain-v1|current|previous|ready|generations?|derived-artifacts?|compiler-state|compiler-checkpoints?|writer-state|controlled-write-state|audit|audit-logs?|audit-ledgers?|rollback|rollbacks|rollback-capsules?|approval|approvals|approval-markers?|payload|payloads)$/iu;
+const forbiddenRuntimeFilename = /^(?:runtime-catalog(?:[._-][^.]+)*\.json|(?:build|compiler|writer|write)[-_](?:state|checkpoint|journal|lock)(?:[._-][^.]+)*\.(?:json|jsonl)|checkpoints?(?:[._-][^.]+)*\.json|ingest-journal(?:[._-][^.]+)*\.(?:json|jsonl)|audit-(?:log|ledger)(?:[._-][^.]+)*\.(?:json|jsonl)|rollback-capsule(?:[._-][^.]+)*\.(?:json|jsonl)|approval(?:-marker)?(?:[._-][^.]+)*\.json|payload(?:[._-][^.]+)*\.(?:json|jsonl))$/iu;
+const forbiddenCredentialFilename = /^(?:\.env(?!\.example$)|\.npmrc|\.pypirc|credentials?\.json|id_(?:dsa|ecdsa|ed25519|rsa)|secrets?\.json|service-account(?:[._-][^.]+)*\.json)$/iu;
+const unsafeTextControl = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/u;
+
 const localPathPatterns = [
   { label: 'macOS user path', pattern: /(?:file:\/\/)?\/Users\/[^\s'"`/]+(?:\/[^\s'"`]*)?/iu },
   { label: 'macOS volume path', pattern: /(?:file:\/\/)?\/Volumes\/[^\s'"`/]+(?:\/[^\s'"`]*)?/iu },
   { label: 'Linux user path', pattern: /(?:file:\/\/)?\/home\/[^\s'"`/]+(?:\/[^\s'"`]*)?/iu },
-  { label: 'macOS private temporary path', pattern: /\/private\/(?:tmp|var)\/[^\s'"`]*/iu },
+  { label: 'temporary local path', pattern: /(?:\/private)?\/tmp\/[^\s'"`]*/iu },
+  { label: 'macOS private temporary path', pattern: /\/private\/var\/[^\s'"`]*/iu },
   { label: 'Windows user path', pattern: /[A-Za-z]:[\\/]Users[\\/][^\s'"`\\/]+/iu },
+  { label: 'escaped Windows user path', pattern: /[A-Za-z]:\\\\Users\\\\[^\s'"`\\/]+/iu },
+  // Require plausible server/share names and distinguish a real UNC prefix
+  // from either a drive path or a backslash run inside a regex literal.
+  { label: 'Windows UNC path', pattern: /(?<![A-Za-z0-9._:-])(?<!\\)\\\\[A-Za-z0-9][A-Za-z0-9._-]{0,62}\\[A-Za-z0-9$][A-Za-z0-9$._-]{0,79}(?:\\[^\s'"`]*)?/u },
+  { label: 'escaped Windows UNC path', pattern: /(?<!\\)\\\\\\\\[A-Za-z0-9][A-Za-z0-9._-]{0,62}\\\\[A-Za-z0-9$][A-Za-z0-9$._-]{0,79}(?:\\\\[^\s'"`]*)?/u },
 ];
 const strongCredentialPatterns = [
   { label: 'private key', pattern: /-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/u },
   { label: 'GitHub token', pattern: /\b(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{20,})\b/u },
+  { label: 'GitLab token', pattern: /\bglpat-[A-Za-z0-9_-]{20,}\b/u },
+  { label: 'Hugging Face token', pattern: /\bhf_[A-Za-z0-9]{30,}\b/u },
   { label: 'AWS access key', pattern: /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/u },
   { label: 'Google API key', pattern: /\bAIza[A-Za-z0-9_-]{30,}\b/u },
   { label: 'Slack token', pattern: /\bxox[baprs]-[A-Za-z0-9-]{20,}\b/u },
   { label: 'live Stripe secret', pattern: /\bsk_live_[A-Za-z0-9]{16,}\b/u },
+  { label: 'Anthropic secret', pattern: /\bsk-ant-[A-Za-z0-9_-]{24,}\b/u },
   { label: 'OpenAI-style secret', pattern: /\bsk-[A-Za-z0-9_-]{32,}\b/u },
   { label: 'JWT', pattern: /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/u },
   { label: 'Bearer credential', pattern: /\bBearer\s+[A-Za-z0-9._~+/-]{24,}\b/iu },
+  { label: 'Basic credential', pattern: /\bBasic\s+[A-Za-z0-9+/]{24,}={0,2}\b/iu },
+  { label: 'credential-bearing URL', pattern: /\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:[^\s/@]+@/iu },
 ];
-const genericSecretAssignment = /\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|password|secret)\b\s*[:=]\s*["'`]([A-Za-z0-9+/_=.-]{20,})["'`]/giu;
-const safePlaceholder = /(?:change[-_ ]?me|dummy|example|placeholder|replace[-_ ]?with|sample|test[-_]|your[-_ ])/iu;
+const genericSecretAssignment = /\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|password|secret)\b\s*[:=]\s*(?:(['"`])([A-Za-z0-9+/_=.-]{20,})\1|([A-Za-z0-9+/_=-]{20,})(?=\s*(?:$|[;#])))/gimu;
+const safePlaceholder = /(?:change[-_ ]?me|dummy|example|placeholder|replace[-_ ]?with|sample|synthetic|test[-_]|your[-_ ])/iu;
 
 export function findSensitiveFinding(filename, content) {
   for (const detector of localPathPatterns) {
@@ -42,7 +68,7 @@ export function findSensitiveFinding(filename, content) {
   }
   genericSecretAssignment.lastIndex = 0;
   for (const match of content.matchAll(genericSecretAssignment)) {
-    const value = match[1] || '';
+    const value = match[2] || match[3] || '';
     if (!safePlaceholder.test(value)) {
       return `${filename} contains a credential-like assignment`;
     }
@@ -50,23 +76,116 @@ export function findSensitiveFinding(filename, content) {
   return null;
 }
 
+export function findRepositoryPathFinding(filename) {
+  if (typeof filename !== 'string' || filename.length === 0) {
+    return 'repository candidate has an empty path';
+  }
+  if (filename.includes('\\') || /[\u0000-\u001F\u007F]/u.test(filename)) {
+    return `${JSON.stringify(filename)} has an unsafe repository path`;
+  }
+  if (path.posix.isAbsolute(filename)
+      || path.posix.normalize(filename) !== filename
+      || filename.split('/').some((segment) => segment === '' || segment === '.' || segment === '..')) {
+    return `${filename} is not a canonical repository-relative path`;
+  }
+
+  const normalized = filename.normalize('NFC');
+  if (forbiddenKnowledgePath.test(normalized)) {
+    return `${filename} is inside a personal knowledge or attachment directory`;
+  }
+  const segments = normalized.split('/');
+  if (segments.some((segment) => forbiddenRuntimeSegment.test(segment))) {
+    return `${filename} is inside second-brain compiler or writer runtime state`;
+  }
+
+  const basename = segments.at(-1) || '';
+  if (forbiddenRuntimeFilename.test(basename)) {
+    return `${filename} is second-brain compiler or writer runtime state`;
+  }
+  if (forbiddenCredentialFilename.test(basename) && basename.toLocaleLowerCase() !== '.env.example') {
+    return `${filename} is a credential-bearing configuration file`;
+  }
+  const extension = path.posix.extname(normalized).toLocaleLowerCase();
+  if (forbiddenArtifactExtensions.has(extension)) {
+    return `${filename} is a forbidden document or archive artifact`;
+  }
+  if (forbiddenCredentialExtensions.has(extension)) {
+    return `${filename} is a forbidden credential artifact`;
+  }
+  return null;
+}
+
+export function decodeAuditedText(filename, buffer) {
+  let content;
+  try {
+    content = utf8Decoder.decode(buffer);
+  } catch {
+    throw new Error(`${filename} is binary or is not valid UTF-8 text`);
+  }
+  if (unsafeTextControl.test(content)) {
+    throw new Error(`${filename} contains binary control bytes`);
+  }
+  return content;
+}
+
 export async function auditRepository() {
-  await assertNoUnstagedTrackedChanges();
-  const contents = new Map(await Promise.all(
-    releaseFiles.map(async (filename) => [filename, await readFile(path.join(root, filename), 'utf8')])
-  ));
-  const manifest = JSON.parse(contents.get('manifest.json'));
-  const packageJson = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
-  const versions = JSON.parse(await readFile(path.join(root, 'versions.json'), 'utf8'));
-  const mcpPackage = JSON.parse(await readFile(path.join(root, 'mcp', 'package.json'), 'utf8'));
-  const mcpIndex = await readFile(path.join(root, 'mcp', 'src', 'index.ts'), 'utf8');
+  const repositoryFiles = await listRepositoryFiles();
+  const repositoryFileSet = new Set(repositoryFiles);
+  for (const filename of requiredContractFiles) {
+    if (!repositoryFileSet.has(filename)) {
+      throw new Error(`${filename} is missing from the Git release candidate`);
+    }
+  }
+
+  // Validate the complete Git candidate before parsing any contract file. This
+  // prevents release-file symlinks from being followed before they are rejected.
+  const contents = new Map();
+  for (const filename of repositoryFiles) {
+    validateRepositoryPath(filename);
+    const absolutePath = path.resolve(root, filename);
+    if (absolutePath !== root && !absolutePath.startsWith(`${root}${path.sep}`)) {
+      throw new Error(`${filename} resolves outside the repository`);
+    }
+    const fileInfoBefore = await lstat(absolutePath);
+    if (fileInfoBefore.isSymbolicLink()) {
+      throw new Error(`${filename} is a symbolic link; release sources must be self-contained`);
+    }
+    if (!fileInfoBefore.isFile()) {
+      throw new Error(`${filename} is not a regular file; Git links and special files are forbidden`);
+    }
+    if (fileInfoBefore.size > maximumSourceBytes) {
+      throw new Error(`${filename} exceeds the ${maximumSourceBytes}-byte source limit`);
+    }
+
+    const buffer = await readFile(absolutePath);
+    const fileInfoAfter = await lstat(absolutePath);
+    if (!fileInfoAfter.isFile()
+        || fileInfoAfter.isSymbolicLink()
+        || fileInfoBefore.dev !== fileInfoAfter.dev
+        || fileInfoBefore.ino !== fileInfoAfter.ino
+        || fileInfoAfter.size !== buffer.byteLength) {
+      throw new Error(`${filename} changed while the release audit was reading it`);
+    }
+    const content = decodeAuditedText(filename, buffer);
+    const finding = findSensitiveFinding(filename, content);
+    if (finding) throw new Error(finding);
+    contents.set(filename, content);
+  }
+
+  const manifest = parseJsonContract(contents, 'manifest.json');
+  const packageJson = parseJsonContract(contents, 'package.json');
+  const versions = parseJsonContract(contents, 'versions.json');
+  const mcpPackage = parseJsonContract(contents, 'mcp/package.json');
+  const mcpIndex = contents.get('mcp/src/index.ts');
 
   if (manifest.id !== 'graph-communities'
       || manifest.name !== 'Graph Communities'
       || manifest.author !== 'annymiao') {
     throw new Error('Obsidian plugin identity changed unexpectedly.');
   }
-  if (packageJson.name !== 'obsidian-graph-communities' || packageJson.author !== 'annymiao') {
+  if (packageJson.name !== 'obsidian-graph-communities'
+      || packageJson.author !== 'annymiao'
+      || packageJson.repository?.url !== 'git+https://github.com/annymiao/obsidian-graph-communities.git') {
     throw new Error('Repository package identity changed unexpectedly.');
   }
   if (mcpPackage.name !== 'obsidian-knowledge-gateway') {
@@ -86,26 +205,6 @@ export async function auditRepository() {
     throw new Error(`Version mismatch: mcp package=${mcpPackage.version}, service=${serviceVersion || 'missing'}`);
   }
 
-  const repositoryFiles = await listRepositoryFiles();
-  for (const filename of repositoryFiles) {
-    validateRepositoryPath(filename);
-    const absolutePath = path.join(root, filename);
-    const fileInfo = await lstat(absolutePath);
-    if (fileInfo.isSymbolicLink()) {
-      throw new Error(`${filename} is a symbolic link; release sources must be self-contained`);
-    }
-    if (!fileInfo.isFile()) continue;
-    if (fileInfo.size > maximumSourceBytes) {
-      throw new Error(`${filename} exceeds the ${maximumSourceBytes}-byte source limit`);
-    }
-    const buffer = await readFile(absolutePath);
-    if (buffer.includes(0)) {
-      throw new Error(`${filename} is binary; this repository must remain code and text only`);
-    }
-    const finding = findSensitiveFinding(filename, buffer.toString('utf8'));
-    if (finding) throw new Error(finding);
-  }
-
   const runtime = contents.get('main.js');
   for (const networkApi of ['fetch(', 'XMLHttpRequest', 'WebSocket(', 'EventSource(']) {
     if (runtime.includes(networkApi)) {
@@ -114,25 +213,18 @@ export async function auditRepository() {
   }
 
   console.log(
-    `Release audit passed: ${releaseFiles.join(', ')} · version ${manifest.version} · ` +
-    `${repositoryFiles.length} repository files checked · no personal paths, credentials, binary artifacts, or plugin network APIs.`
+    `Release audit passed: ${releaseFiles.join(', ')} · version ${manifest.version} · `
+    + `${repositoryFiles.length} Git candidate files checked · no personal paths, credentials, binary artifacts, symlinks, runtime state, or plugin network APIs.`
   );
 }
 
-async function assertNoUnstagedTrackedChanges() {
+function parseJsonContract(contents, filename) {
   try {
-    await execFileAsync(
-      'git',
-      ['diff', '--quiet', '--no-ext-diff', '--'],
-      { cwd: root }
-    );
+    return JSON.parse(contents.get(filename));
   } catch (error) {
-    if (error && typeof error === 'object' && 'code' in error && error.code === 1) {
-      throw new Error(
-        'Release audit refuses unstaged tracked changes because it must inspect the exact staged bytes.'
-      );
-    }
-    throw error;
+    throw new Error(
+      `${filename} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 
@@ -140,20 +232,17 @@ async function listRepositoryFiles() {
   const { stdout } = await execFileAsync(
     'git',
     ['ls-files', '--cached', '--others', '--exclude-standard', '-z'],
-    { cwd: root, encoding: 'utf8', maxBuffer: 20_000_000 }
+    { cwd: root, encoding: 'utf8', maxBuffer: 20_000_000 },
   );
+  if (stdout.includes('\uFFFD')) {
+    throw new Error('Git release candidate contains a filename that is not valid UTF-8');
+  }
   return [...new Set(stdout.split('\0').filter(Boolean))].sort((a, b) => a.localeCompare(b));
 }
 
 function validateRepositoryPath(filename) {
-  const normalized = filename.replace(/\\/gu, '/');
-  if (forbiddenKnowledgePath.test(normalized)) {
-    throw new Error(`${filename} is inside a personal knowledge or attachment directory`);
-  }
-  const extension = path.extname(normalized).toLocaleLowerCase();
-  if (forbiddenArtifactExtensions.has(extension)) {
-    throw new Error(`${filename} is a forbidden document or archive artifact`);
-  }
+  const finding = findRepositoryPathFinding(filename);
+  if (finding) throw new Error(finding);
 }
 
 const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : '';

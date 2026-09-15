@@ -70,7 +70,7 @@ test('REST gateway requires an API key and exposes read-only knowledge', async (
 	assert.equal(health.status, 200);
 	const healthBody = await health.json() as { mode: string; version: string };
 	assert.equal(healthBody.mode, 'read-only');
-	assert.equal(healthBody.version, '1.2.0');
+	assert.equal(healthBody.version, '1.3.0');
 
 	const unauthorized = await fetch(`${baseUrl}/v1/search`, {
 		method: 'POST',

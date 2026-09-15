@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.0 — 2026-09-15
+
+- Added the five-layer compiled second-brain path: resumable offline compilation, checksummed multi-layer artifacts, an atomic runtime catalog, deadline-bounded hybrid retrieval, human-approved controlled writes, and reusable model-neutral interfaces.
+- Added strict Source/Project/Mode/Path authorization, BM25/Dense/Metadata/Temporal/Hierarchy recall, RRF, optional fixed-loopback reranking, near-duplicate suppression, extractive Evidence Packs, and explicit timeout/no-evidence/source-failure refusals.
+- Added source/version-bound proposals, private exact review, durable one-time approval, CAS and atomic directory writes, recovery-aware receipts, hash-chain audit, fresh-approved rollback, reingestion, catalog repinning, and hot reload. Mutation tools remain absent unless a trusted MCP App host explicitly opts in; HTTP remains read-only.
+- Hardened private state and publication with owner/mode/link/identity checks, deep cross-layer artifact validation, per-source generation plus manifest-Hash pins, checkpoint recovery, and Git-worktree rejection for artifacts, catalogs, and writer state.
+- Made the 1.3 compiler, MCP, and HTTP services the default install and package entries; retained the 1.2 request-time implementation only through explicit legacy commands.
+- Added synthetic end-to-end, recovery, authorization, privacy, install/upgrade, interface, and five-second deadline regression coverage. No personal Vault content or generated runtime state is included.
+
 ## 1.2.0 — 2026-09-15
 
 - Integrated the published 0.7.0 retrieval foundation: stable evidence identities, verified persistent generations, scope-aware indexing, lexical candidate selection, bounded graph reranking, and synthetic regression/benchmark coverage.

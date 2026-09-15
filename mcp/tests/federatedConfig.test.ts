@@ -29,7 +29,14 @@ test('strict source JSON produces independent logical identities and artifact ro
 	t.after(() => rm(parent, { recursive: true, force: true }));
 	const loaded = await loadKnowledgeServiceConfig({
 		OBSIDIAN_SOURCES_JSON: JSON.stringify([
-			{ id: 'archive-a', name: 'Archive A', path: first },
+			{
+				id: 'archive-a',
+				name: 'Archive A',
+				path: first,
+				kind: 'obsidian-vault',
+				project_id: 'project-a',
+				writable: true,
+			},
 			{ id: 'archive-b', name: 'Archive B', path: second },
 		]),
 		OBSIDIAN_ARTIFACT_PATH: artifacts,
@@ -44,6 +51,13 @@ test('strict source JSON produces independent logical identities and artifact ro
 		'Archive A',
 		'Archive B',
 	]);
+	assert.deepEqual(loaded.sources.map((source) => source.sourceKind), [
+		'obsidian-vault',
+		'directory',
+	]);
+	assert.equal(loaded.sources[0]?.projectId, 'project-a');
+	assert.equal(loaded.sources[0]?.writable, true);
+	assert.equal(loaded.sources[1]?.writable, false);
 	const artifactPaths = loaded.sources.map((source) => source.artifactPath);
 	assert.equal(new Set(artifactPaths).size, 2);
 	for (const artifactPath of artifactPaths) {
@@ -84,7 +98,15 @@ test('source JSON rejects ambiguity and unsupported shapes before indexing', asy
 				{ id: 'one', name: 'One', path: root, enabled: true },
 			]),
 		}),
-		/only id, name, and path/u,
+		/unsupported field/u,
+	);
+	await assert.rejects(
+		loadKnowledgeServiceConfig({
+			OBSIDIAN_SOURCES_JSON: JSON.stringify([
+				{ id: 'one', name: 'One', path: root, writable: 'yes' },
+			]),
+		}),
+		/writable must be boolean/u,
 	);
 	await assert.rejects(
 		loadKnowledgeServiceConfig({

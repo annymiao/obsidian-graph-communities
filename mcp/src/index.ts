@@ -29,7 +29,7 @@ export interface KnowledgeMcpServerOptions {
 	transmissionReviewMode: TransmissionReviewMode;
 }
 
-export const KNOWLEDGE_SERVICE_VERSION = '1.2.0';
+export const KNOWLEDGE_SERVICE_VERSION = '1.3.0';
 
 export function createKnowledgeMcpServer(
 	knowledge: KnowledgeAccess,
