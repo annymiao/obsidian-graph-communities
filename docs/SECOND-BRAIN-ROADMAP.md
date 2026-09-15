@@ -19,6 +19,53 @@ This repository contains two independent components:
 
 Version 1.2 does not add memory writeback to either component. It also does not automatically merge identities, decide which conflicting claim is true, or delete/forget source evidence.
 
+## Target five-plane architecture and the v1.2 gap
+
+The production target is a five-plane system. Version 1.2 implements the verified lexical retrieval foundation, not every box in that target. In the tree below, `[done]` means an executable end-to-end path, `[partial]` means the capability exists without the intended separation or reusable contract, and `[planned]` means there is no production implementation yet.
+
+```text
+Obsidian second brain
+├── Offline compilation plane [partial: still runs inside the request-serving process]
+│   ├── [done] safe discovery, policy scan, content/config/pipeline hashes
+│   ├── [done] Markdown parsing, heading chunks, exact-body deduplication
+│   ├── [done] inverted lexical candidates, BM25, metadata and link structures
+│   ├── [planned] vector/ANN index
+│   ├── [partial] time and hierarchy metadata, without dedicated indexes
+│   ├── [partial] complete-generation crash recovery, without per-file checkpoints
+│   └── [done] checksummed staging -> READY -> atomic CURRENT publication
+│
+├── Local persistence plane [partial: one sensitive snapshot per source and mode]
+│   ├── [partial] strict configured source catalog, without a durable catalog/UI/journal
+│   ├── [partial] lexical statistics persisted; in-memory postings rebuilt on reopen
+│   ├── [planned] vector index
+│   ├── [partial] monolithic derived payload containing content, chunks and metadata
+│   ├── [done] immutable READY generations
+│   └── [done] atomic CURRENT pointer
+│
+├── Online query plane [partial: lexical retrieval is complete; hybrid retrieval is not]
+│   ├── [partial] corpus/scope modes, without per-project authorization IDs
+│   ├── [partial] parallel per-source BM25/metadata, without dense retrieval
+│   ├── [partial] bounded graph reranking, without RRF or a pluggable reranker
+│   ├── [partial] ingestion deduplication and extractive chunk packing
+│   └── [partial] traceable evidence or safe abstention; real-corpus five-second acceptance pending
+│
+├── Controlled write plane [planned in this repository]
+│   ├── correction proposals with sources and a structured before/after diff
+│   ├── risk policy and human approval token
+│   ├── isolated writer adapters with compare-and-swap preconditions
+│   ├── append-only audit, receipts and rollback
+│   └── commit -> reingest -> new evidence-version receipt
+│
+└── Reusable interfaces [partial]
+    ├── [done] local Markdown-directory read source
+    ├── [done] MCP and authenticated local REST read APIs
+    ├── [planned] versioned Obsidian/source adapter contract
+    ├── [planned] embedding and reranker adapters
+    └── [partial] model-neutral reads; no cross-client controlled-write contract
+```
+
+The sequencing consequence is important. First make large collections cheap and resumable with a content-hash catalog, change journal/checkpoints, compact lexical postings, per-document recompilation, and a shared artifact specification. A private evaluation track may test optional local embeddings, metadata/time/hierarchy retrievers, RRF, and rerankers in parallel, but none should become the default unless it improves labeled retrieval while preserving scope isolation, traceability, privacy, and the latency target. Source-management UI and additional read adapters follow the stable compiler boundary. Controlled writes come last: no MCP or REST write API should exist until proposal hashes, structured diffs, approval tokens, writer isolation, audit/rollback, and verified reingestion form one closed protocol.
+
 ## Ordered delivery
 
 ### Phase 1 — bounded, accurate retrieval
