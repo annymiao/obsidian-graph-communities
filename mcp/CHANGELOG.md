@@ -4,6 +4,7 @@
 
 - Added the five-layer compiled second-brain path: resumable offline compilation, checksummed multi-layer artifacts, an atomic runtime catalog, cooperative-budget hybrid retrieval, human-approved controlled writes, and reusable model-neutral interfaces.
 - Added transition-gated build/generation/catalog locks, durable token-bound release markers, non-retryable post-operation release errors, cross-process cache refresh, typed watch retries, a hash-only schema-v3 deployment fence covering read-only roots and compiler policy, source-binding CAS, idempotent pin retries, and per-source serialization of the full controlled-reingest/publish/reload transition.
+- Hardened lock handoff for Linux directory-inode reuse and slow owner publication: directory locks use random owner tokens as their primary instance identity, while file locks boundedly retry incomplete `O_EXCL` owner publication and still fail closed on timeout or structural violations.
 - Revalidated catalog, generation, compiler, writer, and controlled-write state against Git/source boundaries again during online bootstrap, including canonicalized symlink targets.
 - Canonicalized explicit private-state paths before Git/source isolation checks; no-op reuse now rejects Hash-valid cross-layer drift, and catalog-pinned generations must not use generic pruning before catalog-aware GC exists.
 - Added required record/version-bound chunk Lexical persistence for online BM25. Legacy local generations without `lexical.chunkIndex` fail closed and require one source-online offline rebuild; original Markdown is unchanged.
@@ -14,6 +15,7 @@
 - Made capability reporting explicitly source-level in the documentation while retaining per-path authorization during every prepare. MCP accepts at most 262,144 UTF-8 bytes of `after_content`; the complete private review transport is capped at 1,000,000 bytes.
 - Documented that an external offline catalog publication requires an online bootstrap restart/recreation because `runtime.reload()` does not reread the catalog, whereas the in-process controlled-write path validates, repins, updates its descriptor, and hot-reloads the affected source.
 - Hardened private state and publication with owner/mode/link/identity checks, deep cross-layer artifact validation, per-source generation plus manifest-Hash pins, checkpoint recovery, and Git-worktree rejection for artifacts, catalogs, and writer state.
+- Explicitly reject FAT/exFAT and other filesystems that cannot enforce private permission and managed-directory invariants as runtime-state roots; macOS deployments keep sensitive state in a private APFS application-data directory even when repository code lives on an external volume.
 - Made the 1.3 compiler, MCP, and HTTP services the default install and package entries; retained the 1.2 request-time implementation only through explicit legacy commands.
 - Added synthetic end-to-end, recovery, authorization, privacy, install/upgrade, interface, and cooperative deadline-behavior regression coverage. No personal Vault content or generated runtime state is included.
 

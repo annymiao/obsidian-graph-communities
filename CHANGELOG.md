@@ -6,6 +6,7 @@
 - Added a resumable offline compiler with bounded source scanning, strict Markdown/frontmatter parsing, heading chunks, authorization-domain deduplication, per-file checkpoints, a compactable journal, final source rescan, and atomic publication.
 - Added checksummed Catalog, compact Lexical, Vector, Derived, Temporal, and Hierarchy layers with deep cross-layer validation, immutable `READY` generations, per-source `CURRENT`, and an atomic multi-source runtime catalog that pins generation IDs and manifest hashes.
 - Hardened long-running publication with transition-gated dead-owner recovery, cross-process build-cache refresh, typed watch retries, a hash-only schema-v3 deployment fence that covers read-only roots and compiler policy, binding-sensitive catalog CAS, idempotent pin retries, and per-source serialization of the complete controlled-reingest transition.
+- Hardened concurrent lock publication for Linux inode reuse and slower filesystems without weakening fail-closed ownership checks.
 - Canonicalized explicit catalog and controlled-write state paths before Git/source isolation checks, and revalidated persisted generation/compiler/writer/write-state locations at online startup; no-op reuse now deep-validates layer semantics, and runtime-catalog-managed generations remain outside generic pruning until catalog-aware GC exists.
 - Persisted a required chunk-level Lexical index bound to record and version IDs and wired it directly into online BM25. Older local generations without `lexical.chunkIndex` now fail closed and require one source-online offline rebuild; source Markdown is never migrated or modified.
 - Serialized cross-process publication, validated the exact generation pins produced by each run before catalog publication, added catalog checksum compare-and-swap, and avoided generation or catalog churn when the fully read-and-hashed source snapshot and compilation contracts are unchanged.
@@ -17,6 +18,7 @@
 - Made the compiled second-brain MCP and read-only HTTP service the default package entry points; retained the 1.2 request-time services only under explicit `legacy` names. MCP mutation tools remain absent by default and require a trusted host opt-in.
 - Added unified filesystem ingestion for Vault and ordinary-directory sources, safe directory and injectable Obsidian writer contracts, a bound-principal Runtime read facade, fixed-loopback embedding/reranker adapters, offline CLI/watch, MCP, and authenticated local HTTP. A separately pluggable Vault reader remains host work.
 - Strengthened the release privacy gate to inspect the complete Git candidate and reject personal knowledge paths, runtime catalogs/generations/write state, credentials, local absolute paths, symlinks, binary data, and oversized files. Tests continue to use only synthetic temporary Markdown.
+- Documented that external FAT/exFAT volumes may hold repository code but are not supported for sensitive runtime state; macOS catalog, generation, checkpoint, approval, audit, and rollback data require a private APFS application-data location.
 
 ## 1.2.0 — 2026-09-15
 

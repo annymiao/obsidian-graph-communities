@@ -89,6 +89,7 @@ Obsidian 第二大脑 1.3
 - 外部 offline CLI 原子发布新 catalog 后，已运行的 MCP / HTTP 进程需重启或重建 bootstrap 才会重读 catalog；`runtime.reload()` 只重读已绑定 descriptor，不会自行重读外部 catalog。受控写的本进程路径则会先校验精确 generation、CAS 更新 catalog pin，再更新 descriptor 并热 reload。
 - MCP `after_content` 上限为 262,144 UTF-8 bytes，完整私有审核文档上限为 1,000,000 bytes。后者包含 Diff、理由和绑定元数据，所以大型既有文件的 replace / delete 可能在打开审核时被拒绝；该失败不会写入文件。
 - Build、generation 与 catalog 锁使用固定 `*.lock.recovery` transition gate 防止并发恢复 ABA。受保护操作结束后先持久写入 token-bound `released.json`，实际摘除仍经 gate；后继可回收 marker 完整的旧锁，即使原 PID 仍存活。仅获取阶段的 busy 可安全重试；操作已经完成后的释放异常是明确的 `retryable=false`，publish / rollback 不得自动重放。升级时必须先停掉共用状态根的全部旧进程，不得混跑锁协议版本。人工清理未知 gate 前须停机、确认无持锁者并把 gate 移到隔离位置，系统绝不自动删除它。
+- Linux 可能快速复用锁目录 inode，因此锁交接以随机 owner token 识别实例，device / inode 只作路径替换辅检；文件型 Writer / audit 锁则在 `O_EXCL` 后的 owner 发布窗口内有界重试，超时仍失败关闭。FAT/exFAT 等无法可靠执行私有权限、原子持久化语义或会生成目录 sidecar 的文件系统不支持承载任何运行时状态；macOS 应使用本机私有 APFS 应用数据目录。项目源码可位于外置盘，但 Catalog、generation、checkpoint、approval、audit 和 rollback 状态不得随源码落在该盘。
 - 通用 generation prune 不知道 runtime catalog 的跨来源 pins；生产第二大脑不调用它，在 catalog-aware GC 完成前也不得对这些 generation 根手工运行。
 - 显式 runtime catalog 和 write-state 路径会先解析最近存在祖先的真实路径，再进行 Git-worktree 与 source-overlap 检查，避免符号链接把敏感派生状态绕入仓库或原始资料目录；在线 bootstrap 会重新校验 catalog 内的 generation / compiler / writer / write-state 路径与 Git、catalog 可见的可写 source roots 的边界。只读 sourceRoot 为避免泄露而不写入 catalog，其 overlap 边界只在受信离线配置阶段验证，在线进程不能从手工 catalog 中恢复该私有定位。
 

@@ -163,6 +163,7 @@ Query + 服务器 Principal
 - Catalog、各层 Hash、`READY` 和 `CURRENT` 会在使用前验证；跨层 ID、ordinal、向量 recipe、adapter、model 和 dimension 不一致时拒绝加载。
 - 本地 HTTP 只绑定 loopback、要求 Bearer 密钥、限制 body、origin 和速率，而且没有写路由。loopback 仍可能位于隧道之后，不等于自动可信。
 - POSIX 上私有状态要求当前用户所有且无 group / other 权限；Windows 依赖应用数据目录 ACL。Windows 的目录 `fsync` 是 best effort，因此只承诺原子可见性与重启校验，不承诺掉电后最新 generation 一定持久。
+- FAT/exFAT 等不能可靠表达私有权限、原子持久化语义或会在受管目录生成额外 sidecar 的文件系统不支持承载 Catalog、generation、checkpoint、approval、audit 与 rollback 状态。macOS 部署应把这些状态放在本机私有 APFS 应用数据目录；外置盘可以保存项目源码，但不应作为运行时状态根。
 - Node.js 没有为全部操作提供可移植的 `openat` / 目录句柄相对 API。实现会拒绝 symlink 并复验 realpath、device、inode 和版本，但不承诺抵御拥有同一用户权限、可在系统调用之间恶意替换祖先目录的进程。
 - Hash 用于完整性和可追溯性，不是加密。运行状态、API 和错误会隐藏绝对主机路径，但本地产物本身仍包含敏感正文或私有定位信息，必须依赖文件权限和磁盘加密保护。
 

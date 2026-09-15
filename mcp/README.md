@@ -97,6 +97,8 @@ Watch 每轮仍会读取并 Hash 全部 eligible Markdown 以证明快照未变�
 
 可以用 `OBSIDIAN_SECOND_BRAIN_CATALOG_PATH` 指定绝对 catalog 文件，或者让它位于配置的 artifact 根下。Catalog 是本机私有、带校验和且 POSIX 请求权限为 `0600` 的文件；它可能包含 runtime 需要的本地定位，绝不能提交。
 
+不要把 artifact、catalog、checkpoint、approval、audit 或 rollback 状态放到 FAT/exFAT、共享盘或其他无法可靠执行私有权限与原子持久化语义的文件系统。macOS 上应把这些运行时状态放在本机私有 APFS 应用数据目录；项目源码可以位于外置盘，但外置盘不会因此成为受支持的状态根。检测到权限或目录结构不满足要求时，系统会失败关闭，不会降低安全检查。
+
 一个 catalog 路径在首次成功发布后会绑定到当时的来源、Embedding 和 Writer 配置；其他配置即使后来读到最新 checksum 也不能接管。需要换配置时，先停止使用该 catalog 的全部 publisher 与在线进程，再使用新的 catalog 路径，或把可重建的旧 catalog 离线移走后重新编译。不要让不同配置的 Watch 共享同一路径。
 
 ## Embedding 与 Reranker Adapter
