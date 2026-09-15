@@ -623,20 +623,17 @@ async function writeReleaseMarker(
 }
 
 async function originalLockWasDetached(lock: AcquiredPrivateDirectoryLock): Promise<boolean> {
-	await assertPrivateDirectoryIdentity(
+	const gate = await acquireTransitionGate(
 		lock.parentPath,
 		lock.parentIdentity,
-		'Private directory lock parent',
+		lock.transitionGatePath,
+		lock.releaseTimeoutMs,
 	);
-	let info;
 	try {
-		info = await lstat(lock.lockPath);
-	} catch (error) {
-		if (isNodeError(error, 'ENOENT')) return true;
-		throw error;
+		return (await observeCurrentLockUnderGate(lock)).kind !== 'original';
+	} finally {
+		await releaseTransitionGate(lock.parentPath, lock.parentIdentity, gate);
 	}
-	assertPrivateDirectoryStats(info, 'Private directory lock');
-	return info.dev !== lock.lockIdentity.dev || info.ino !== lock.lockIdentity.ino;
 }
 
 async function releaseLock(lock: AcquiredPrivateDirectoryLock): Promise<void> {
@@ -648,35 +645,12 @@ async function releaseLock(lock: AcquiredPrivateDirectoryLock): Promise<void> {
 		lock.releaseTimeoutMs,
 	);
 	try {
-		await assertPrivateDirectoryIdentity(
-			lock.parentPath,
-			lock.parentIdentity,
-			'Private directory lock parent',
-		);
-		let lockInfo;
-		try {
-			lockInfo = await lstat(lock.lockPath);
-		} catch (error) {
-			if (isNodeError(error, 'ENOENT')) return;
-			throw error;
-		}
-		assertPrivateDirectoryStats(lockInfo, 'Private directory lock');
-		if (lockInfo.dev !== lock.lockIdentity.dev || lockInfo.ino !== lock.lockIdentity.ino) {
-			// A gated contender already consumed our durable release marker and may
-			// have installed its own lock. Never inspect or remove that new lock.
-			return;
-		}
+		const observation = await observeCurrentLockUnderGate(lock);
+		if (observation.kind !== 'original') return;
 		await assertPrivateDirectoryIdentity(lock.lockPath, lock.lockIdentity, 'Private directory lock');
-		const entries = await readExpectedLockEntries(lock.lockPath, {
-			allowOwnerless: false,
-			allowRelease: true,
-		});
+		const { entries, owner } = observation;
 		if (!entries.hasRelease) {
 			throw new Error('Private directory lock release marker disappeared before release.');
-		}
-		const owner = await readOwner(lock.lockPath);
-		if (!sameOwner(owner, lock.owner)) {
-			throw new Error('Private directory lock ownership changed before release.');
 		}
 		const currentRelease = await readRelease(lock.lockPath);
 		if (!sameRelease(currentRelease, release)) {
@@ -710,6 +684,93 @@ async function releaseLock(lock: AcquiredPrivateDirectoryLock): Promise<void> {
 	} finally {
 		await releaseTransitionGate(lock.parentPath, lock.parentIdentity, gate);
 	}
+}
+
+type CurrentLockObservation =
+	| { kind: 'missing' | 'successor' }
+	| {
+		kind: 'original';
+		entries: LockEntries;
+		owner: PrivateDirectoryLockOwner;
+	};
+
+/** @internal */
+export type PrivateDirectoryLockInstanceClassification = 'original' | 'successor';
+
+/**
+ * Classifies an observed lock owner and directory identity. This is exported
+ * only from this internal module so the inode-reuse rule can be covered deterministically:
+ * the random owner token is the primary instance identity, while dev/ino is a
+ * secondary path-replacement check. Release-marker validation deliberately
+ * happens only after this function identifies the original owner.
+ * @internal
+ */
+export function classifyPrivateDirectoryLockInstance(
+	expectedIdentity: PrivateDirectoryIdentity,
+	expectedOwner: PrivateDirectoryLockOwner,
+	observedIdentity: PrivateDirectoryIdentity,
+	observedOwner: PrivateDirectoryLockOwner,
+): PrivateDirectoryLockInstanceClassification {
+	const sameObservedOwner = sameOwner(observedOwner, expectedOwner);
+	const sameDirectoryIdentity = observedIdentity.dev === expectedIdentity.dev
+		&& observedIdentity.ino === expectedIdentity.ino;
+	if (!sameObservedOwner) {
+		// A successor writes its release marker without holding the transition
+		// gate. The prior owner must not inspect that marker: it may be between
+		// exclusive create and fsync, and its contents belong to the successor.
+		return 'successor';
+	}
+	if (!sameDirectoryIdentity) {
+		throw new Error('Private directory lock owner was copied to a different directory instance.');
+	}
+	return 'original';
+}
+
+/**
+ * Observes the main lock while the caller owns the transition gate. Linux may
+ * immediately reuse a removed directory inode, so dev/ino equality alone does
+ * not prove that the current path is still our lock. A different valid owner
+ * token is a legitimate successor that consumed our durable release marker.
+ * The prior owner never reads a successor's release marker because that marker
+ * may be between exclusive creation and fsync. Malformed or missing owner state
+ * and path replacement retaining our token still fail closed.
+ */
+async function observeCurrentLockUnderGate(
+	lock: AcquiredPrivateDirectoryLock,
+): Promise<CurrentLockObservation> {
+	await assertPrivateDirectoryIdentity(
+		lock.parentPath,
+		lock.parentIdentity,
+		'Private directory lock parent',
+	);
+	let lockInfo;
+	try {
+		lockInfo = await lstat(lock.lockPath);
+	} catch (error) {
+		if (isNodeError(error, 'ENOENT')) return { kind: 'missing' };
+		throw error;
+	}
+	assertPrivateDirectoryStats(lockInfo, 'Private directory lock');
+	const observedIdentity = { dev: lockInfo.dev, ino: lockInfo.ino };
+	const entries = await readExpectedLockEntries(lock.lockPath, {
+		allowOwnerless: false,
+		allowRelease: true,
+	});
+	const owner = await readOwner(lock.lockPath);
+	const classification = classifyPrivateDirectoryLockInstance(
+		lock.lockIdentity,
+		lock.owner,
+		observedIdentity,
+		owner,
+	);
+	if (classification === 'successor') return { kind: 'successor' };
+	if (entries.hasRelease) {
+		const release = await readRelease(lock.lockPath);
+		if (release.token !== owner.token) {
+			throw new Error('Private directory lock release marker does not match its owner.');
+		}
+	}
+	return { kind: 'original', entries, owner };
 }
 
 async function acquireTransitionGate(

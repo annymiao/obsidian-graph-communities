@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import {
+	classifyPrivateDirectoryLockInstance,
 	PrivateDirectoryLockBusyError,
 	PrivateDirectoryLockReleaseError,
 	withPrivateDirectoryLock,
@@ -68,6 +69,46 @@ async function exitedChildPid(): Promise<number> {
 	});
 	return pid;
 }
+
+test('private directory lock classification resists same-inode ABA reuse', () => {
+	const expectedIdentity = { dev: 7, ino: 11 };
+	const expectedOwner = {
+		schemaVersion: 1 as const,
+		pid: 101,
+		token: 'a'.repeat(32),
+		createdAt: '2026-01-01T00:00:00.000Z',
+	};
+	const successorOwner = {
+		schemaVersion: 1 as const,
+		pid: 102,
+		token: 'b'.repeat(32),
+		createdAt: '2026-01-01T00:00:01.000Z',
+	};
+	assert.equal(classifyPrivateDirectoryLockInstance(
+		expectedIdentity,
+		expectedOwner,
+		expectedIdentity,
+		expectedOwner,
+	), 'original');
+	assert.equal(classifyPrivateDirectoryLockInstance(
+		expectedIdentity,
+		expectedOwner,
+		expectedIdentity,
+		successorOwner,
+	), 'successor', 'a new owner token wins even when Linux reuses the directory inode');
+	assert.equal(classifyPrivateDirectoryLockInstance(
+		expectedIdentity,
+		expectedOwner,
+		{ dev: 7, ino: 12 },
+		successorOwner,
+	), 'successor', 'a new owner token also identifies a successor with a new inode');
+	assert.throws(() => classifyPrivateDirectoryLockInstance(
+		expectedIdentity,
+		expectedOwner,
+		{ dev: 7, ino: 12 },
+		expectedOwner,
+	), /copied to a different directory instance/u);
+});
 
 async function waitForText(stream: Readable, expected: string, timeoutMs = 2_000): Promise<void> {
 	await new Promise<void>((resolve, reject) => {
